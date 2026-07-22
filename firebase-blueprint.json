@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "users": {
+      "fields": {
+        "uid": { "type": "string", "description": "User's unique Firebase Auth ID" },
+        "displayName": { "type": "string", "description": "Display name of the user" },
+        "username": { "type": "string", "description": "Unique handle/username (lowercased)" },
+        "userTag": { "type": "string", "description": "Unique numeric tag like #1042" },
+        "email": { "type": "string", "description": "Email address" },
+        "photoURL": { "type": "string", "description": "Profile picture URL or Base64 data" },
+        "bio": { "type": "string", "description": "User bio or tagline" },
+        "status": { "type": "string", "description": "Online status: online, offline, away" },
+        "lastSeen": { "type": "timestamp", "description": "Last activity timestamp" },
+        "createdAt": { "type": "timestamp", "description": "Account creation time" }
+      }
+    },
+    "usernames": {
+      "fields": {
+        "uid": { "type": "string", "description": "UID associated with reserved username" }
+      }
+    },
+    "friendRequests": {
+      "fields": {
+        "id": { "type": "string", "description": "fromUid_toUid request ID" },
+        "fromUid": { "type": "string", "description": "Sender User ID" },
+        "fromUsername": { "type": "string", "description": "Sender username" },
+        "fromDisplayName": { "type": "string", "description": "Sender display name" },
+        "fromPhotoURL": { "type": "string", "description": "Sender avatar photo URL" },
+        "toUid": { "type": "string", "description": "Recipient User ID" },
+        "toUsername": { "type": "string", "description": "Recipient username" },
+        "status": { "type": "string", "description": "Request status: pending, accepted, rejected" },
+        "createdAt": { "type": "timestamp", "description": "Request creation timestamp" }
+      }
+    },
+    "friends": {
+      "fields": {
+        "id": { "type": "string", "description": "Sorted pair ID uidA_uidB" },
+        "users": { "type": "array", "description": "Array of 2 user IDs" },
+        "createdAt": { "type": "timestamp", "description": "Friendship establishment timestamp" }
+      }
+    },
+    "chats": {
+      "fields": {
+        "id": { "type": "string", "description": "Chat room ID (sorted pair uidA_uidB or auto-generated for group)" },
+        "participants": { "type": "array", "description": "Array of participant user IDs" },
+        "isGroup": { "type": "boolean", "description": "Whether this is a group chat" },
+        "groupName": { "type": "string", "description": "Name of the group chat" },
+        "groupAvatar": { "type": "string", "description": "Avatar/icon URL for group chat" },
+        "adminUids": { "type": "array", "description": "Array of admin user UIDs" },
+        "createdBy": { "type": "string", "description": "UID of group creator" },
+        "lastMessage": { "type": "string", "description": "Preview snippet of last message" },
+        "lastMessageSenderId": { "type": "string", "description": "User ID of last sender" },
+        "lastMessageTime": { "type": "timestamp", "description": "Timestamp of last message" },
+        "updatedAt": { "type": "timestamp", "description": "Chat update timestamp" },
+        "unreadCounts": { "type": "map", "description": "Map of unread message counts per user UID" },
+        "typing": { "type": "map", "description": "Map of typing indicators per user UID" }
+      }
+    },
+    "chats/{chatId}/messages": {
+      "fields": {
+        "id": { "type": "string", "description": "Unique message ID" },
+        "chatId": { "type": "string", "description": "Parent chat ID" },
+        "senderId": { "type": "string", "description": "Sender user ID" },
+        "senderName": { "type": "string", "description": "Sender display name" },
+        "senderPhoto": { "type": "string", "description": "Sender profile picture URL" },
+        "text": { "type": "string", "description": "Text message content" },
+        "mediaUrl": { "type": "string", "description": "Optional image/voice data URL" },
+        "type": { "type": "string", "description": "Message type: text, image, audio, system" },
+        "reactions": { "type": "map", "description": "Reactions map { [uid]: emoji }" },
+        "timestamp": { "type": "timestamp", "description": "Message sent timestamp" },
+        "readBy": { "type": "array", "description": "Array of user IDs who read the message" }
+      }
+    }
+  }
+}

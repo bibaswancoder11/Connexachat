@@ -1,0 +1,6 @@
+{
+  "name": "Connexa",
+  "description": "Real-time chat application featuring Firebase authentication, unique user handles, custom profile photos, user search, friend requests, and direct messaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
