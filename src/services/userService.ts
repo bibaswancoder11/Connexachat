@@ -175,57 +175,6 @@ export const updateUserProfile = async (
 export const searchUsers = async (searchTerm: string, currentUid: string): Promise<UserProfile[]> => {
   const term = searchTerm.trim().toLowerCase().replace(/^@/, '');
 
-  const defaultSuggested: UserProfile[] = [
-    {
-      uid: 'demo_alex',
-      email: 'alex@example.com',
-      displayName: 'Alex Chen',
-      username: 'alex_c',
-      userTag: '#1042',
-      photoURL: 'https://api.dicebear.com/7.x/bottts/svg?seed=alex_c',
-      bio: 'Software engineer & tech enthusiast. Love building apps!',
-      status: 'online',
-      lastSeen: null,
-      createdAt: null
-    },
-    {
-      uid: 'demo_sarah',
-      email: 'sarah@example.com',
-      displayName: 'Sarah Miller',
-      username: 'sarah_m',
-      userTag: '#2084',
-      photoURL: 'https://api.dicebear.com/7.x/bottts/svg?seed=sarah_m',
-      bio: 'UI/UX Designer & digital creator.',
-      status: 'offline',
-      lastSeen: null,
-      createdAt: null
-    },
-    {
-      uid: 'demo_david',
-      email: 'david@example.com',
-      displayName: 'David Kim',
-      username: 'david_k',
-      userTag: '#3099',
-      photoURL: 'https://api.dicebear.com/7.x/bottts/svg?seed=david_k',
-      bio: 'Gamer, traveler & coffee lover.',
-      status: 'online',
-      lastSeen: null,
-      createdAt: null
-    },
-    {
-      uid: 'demo_emma',
-      email: 'emma@example.com',
-      displayName: 'Emma Watson',
-      username: 'emma_w',
-      userTag: '#4012',
-      photoURL: 'https://api.dicebear.com/7.x/bottts/svg?seed=emma_w',
-      bio: 'Product Manager @ TechCorp',
-      status: 'online',
-      lastSeen: null,
-      createdAt: null
-    }
-  ];
-
   const candidatesMap = new Map<string, UserProfile>();
 
   // 1. Add local registered accounts
@@ -249,13 +198,6 @@ export const searchUsers = async (searchTerm: string, currentUid: string): Promi
   } catch (error) {
     console.warn('Firestore search query warning:', error);
   }
-
-  // 3. Add default suggested
-  defaultSuggested.forEach(sugg => {
-    if (sugg.uid !== currentUid && !candidatesMap.has(sugg.uid)) {
-      candidatesMap.set(sugg.uid, sugg);
-    }
-  });
 
   const allCandidates = Array.from(candidatesMap.values());
 

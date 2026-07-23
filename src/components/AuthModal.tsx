@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
-import { MessageSquare, AtSign, User, Mail, Lock, Sparkles, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { MessageSquare, AtSign, User, Mail, Lock, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AvatarPicker } from './AvatarPicker';
 import { checkUsernameAvailable } from '../services/userService';
 
 export const AuthModal: React.FC = () => {
-  const { loginWithEmail, registerWithEmail, loginGuest } = useAuth();
+  const { loginWithEmail, registerWithEmail } = useAuth();
   
   const [isRegister, setIsRegister] = useState(false);
   const [email, setEmail] = useState('');
@@ -71,22 +71,6 @@ export const AuthModal: React.FC = () => {
         msg = 'Password should be at least 6 characters long.';
       }
       setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleGuestLogin = async () => {
-    setError('');
-    setLoading(true);
-    try {
-      const randomSeed = Math.floor(100 + Math.random() * 900);
-      const guestName = `User_${randomSeed}`;
-      const guestHandle = `user_${randomSeed}`;
-      const guestAvatar = `https://api.dicebear.com/7.x/bottts/svg?seed=${guestHandle}`;
-      await loginGuest(guestName, guestHandle, guestAvatar);
-    } catch (err: any) {
-      setError(err.message || 'Guest login failed');
     } finally {
       setLoading(false);
     }
@@ -264,27 +248,6 @@ export const AuthModal: React.FC = () => {
                 <ArrowRight className="w-4 h-4" />
               </>
             )}
-          </button>
-
-          {/* Guest / Demo Login Divider */}
-          <div className="relative my-4 text-center">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-slate-200 dark:border-slate-800" />
-            </div>
-            <span className="relative px-3 bg-white dark:bg-slate-900 text-[11px] text-slate-400 uppercase tracking-wider font-medium">
-              Or Try Instantly
-            </span>
-          </div>
-
-          {/* Quick Demo Button */}
-          <button
-            type="button"
-            onClick={handleGuestLogin}
-            disabled={loading}
-            className="w-full py-2.5 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 font-medium rounded-xl text-xs transition-all flex items-center justify-center gap-2 border border-slate-200 dark:border-slate-700"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
-            <span>Continue as Demo Guest Account</span>
           </button>
         </form>
       </div>
