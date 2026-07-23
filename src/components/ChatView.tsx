@@ -14,7 +14,9 @@ import {
   Users2,
   Info,
   Check,
-  ArrowLeft
+  ArrowLeft,
+  Copy,
+  MoreVertical
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
@@ -51,8 +53,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [showEmojiPicker, setShowEmojiPicker] = useState<string | null>(null); // messageId
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{ id: string; text: string } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -323,6 +329,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
             }
 
             const isMe = msg.senderId === userProfile?.uid;
+            const isGroupAdmin = isGroup && chat.adminUids?.includes(userProfile?.uid || '');
+            const canDelete = isMe || isGroupAdmin;
             const hasReactions = msg.reactions && Object.keys(msg.reactions).length > 0;
             const senderProfile = isGroup ? chat.participantProfiles?.[msg.senderId] : null;
 
@@ -330,13 +338,14 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
             const senderAvatar = msg.senderPhoto || senderProfile?.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${msg.senderId}`;
 
             const readCount = (msg.readBy || []).filter(u => u !== msg.senderId).length;
+            const isSelected = selectedMessageId === msg.id;
 
             return (
               <div
                 key={msg.id}
-                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group relative`}
+                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} group relative transition-all duration-150 my-1`}
               >
-                <div className="flex items-end gap-2 max-w-[85%] sm:max-w-[70%]">
+                <div className="flex items-end gap-1.5 max-w-[88%] sm:max-w-[75%] relative">
                   {!isMe && (
                     <img
                       src={senderAvatar}
@@ -346,9 +355,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                     />
                   )}
 
-                  {/* Message Bubble Container */}
+                  {/* Message Bubble Container - Tapping selects/highlights */}
                   <div
-                    className={`relative p-3.5 rounded-2xl text-xs md:text-sm shadow-2xs leading-relaxed space-y-1.5 ${
+                    onClick={() => setSelectedMessageId(isSelected ? null : msg.id)}
+                    className={`relative p-3.5 rounded-2xl text-xs md:text-sm leading-relaxed space-y-1.5 cursor-pointer transition-all ${
+                      isSelected ? 'ring-2 ring-blue-500/90 dark:ring-blue-400/90 shadow-md scale-[1.01]' : 'shadow-2xs hover:shadow-xs'
+                    } ${
                       isMe
                         ? 'bg-blue-600 text-white rounded-br-2px'
                         : 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white border border-slate-200/80 dark:border-slate-700/80 rounded-bl-2px'
@@ -363,7 +375,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
 
                     {/* Image attachment */}
                     {msg.type === 'image' && msg.mediaUrl && (
-                      <div className="overflow-hidden rounded-xl max-w-xs cursor-pointer" onClick={() => setPreviewImage(msg.mediaUrl || null)}>
+                      <div className="overflow-hidden rounded-xl max-w-xs cursor-pointer" onClick={(e) => { e.stopPropagation(); setPreviewImage(msg.mediaUrl || null); }}>
                         <img src={msg.mediaUrl} alt="Attached Media" className="w-full h-auto object-cover hover:scale-105 transition-transform" />
                       </div>
                     )}
@@ -373,7 +385,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                       <div className="flex items-center gap-3 p-2 bg-black/10 dark:bg-white/10 rounded-xl min-w-[180px]">
                         <button
                           type="button"
-                          onClick={() => togglePlayAudio(msg.id, msg.mediaUrl!)}
+                          onClick={(e) => { e.stopPropagation(); togglePlayAudio(msg.id, msg.mediaUrl!); }}
                           className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-400 transition-colors shrink-0"
                         >
                           {playingAudioId === msg.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
@@ -415,23 +427,57 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                     )}
                   </div>
 
-                  {/* Hover Actions: Reactions & Delete */}
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1">
+                  {/* Actions Bar: Visible on hover, tap select, or when reaction picker is open */}
+                  <div className={`flex items-center gap-0.5 p-1 rounded-xl bg-white/90 dark:bg-slate-800/90 backdrop-blur-xs border border-slate-200/80 dark:border-slate-700/80 shadow-md transition-all ${
+                    isSelected || showEmojiPicker === msg.id ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-95 pointer-events-none group-hover:pointer-events-auto'
+                  }`}>
+                    {/* React Button */}
                     <button
                       type="button"
-                      onClick={() => setShowEmojiPicker(showEmojiPicker === msg.id ? null : msg.id)}
-                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-800"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowEmojiPicker(showEmojiPicker === msg.id ? null : msg.id);
+                      }}
+                      className="p-1.5 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
                       title="Add reaction"
                     >
                       <Smile className="w-3.5 h-3.5" />
                     </button>
 
-                    {isMe && (
+                    {/* Copy Text Button */}
+                    {msg.text && (
                       <button
                         type="button"
-                        onClick={() => deleteMessage(chat.id, msg.id)}
-                        className="p-1 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40"
-                        title="Delete message"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard.writeText(msg.text);
+                          setCopiedMessageId(msg.id);
+                          setTimeout(() => setCopiedMessageId(null), 1800);
+                        }}
+                        className="p-1.5 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                        title="Copy text"
+                      >
+                        {copiedMessageId === msg.id ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-500" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    )}
+
+                    {/* Delete Button */}
+                    {canDelete && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setConfirmDeleteModal({
+                            id: msg.id,
+                            text: msg.text || (msg.type === 'image' ? 'Photo attachment' : msg.type === 'audio' ? 'Voice note' : 'Message')
+                          });
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                        title={isMe ? "Delete your message" : "Delete message (Group Admin)"}
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
@@ -576,6 +622,61 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
           onClose={() => setShowGroupInfoModal(false)}
           onGroupLeft={onGroupLeft}
         />
+      )}
+
+      {/* Delete Message Confirmation Modal */}
+      {confirmDeleteModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400">
+                <Trash2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">Delete Message?</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  This message will be permanently deleted for everyone in this chat.
+                </p>
+              </div>
+            </div>
+
+            {confirmDeleteModal.text && (
+              <div className="p-3 bg-slate-100 dark:bg-slate-700/50 rounded-xl text-xs text-slate-700 dark:text-slate-300 italic truncate border border-slate-200/60 dark:border-slate-600/60">
+                "{confirmDeleteModal.text}"
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setConfirmDeleteModal(null)}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={async () => {
+                  if (!chat.id) return;
+                  setIsDeleting(true);
+                  try {
+                    await deleteMessage(chat.id, confirmDeleteModal.id);
+                  } catch (err) {
+                    console.error('Error deleting message:', err);
+                  } finally {
+                    setIsDeleting(false);
+                    setConfirmDeleteModal(null);
+                  }
+                }}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete for Everyone'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

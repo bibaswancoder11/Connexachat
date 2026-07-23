@@ -395,5 +395,34 @@ export const toggleMessageReaction = async (
 export const deleteMessage = async (chatId: string, messageId: string): Promise<void> => {
   const msgRef = doc(db, 'chats', chatId, 'messages', messageId);
   await deleteDoc(msgRef);
+
+  try {
+    const messagesRef = collection(db, 'chats', chatId, 'messages');
+    const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(1));
+    const snap = await getDocs(q);
+
+    const chatRef = doc(db, 'chats', chatId);
+    if (!snap.empty) {
+      const lastMsg = snap.docs[0].data() as ChatMessage;
+      let previewText = lastMsg.text;
+      if (lastMsg.type === 'image') previewText = '📷 Photo';
+      if (lastMsg.type === 'audio') previewText = '🎤 Voice Note';
+
+      await updateDoc(chatRef, {
+        lastMessage: previewText,
+        lastMessageSenderId: lastMsg.senderId,
+        lastMessageTime: lastMsg.timestamp || serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      await updateDoc(chatRef, {
+        lastMessage: '',
+        lastMessageSenderId: '',
+        updatedAt: serverTimestamp()
+      });
+    }
+  } catch (err) {
+    console.warn('Error updating last message after delete:', err);
+  }
 };
 
