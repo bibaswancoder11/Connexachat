@@ -38,6 +38,7 @@ import {
   deleteMessage 
 } from '../services/chatService';
 import { GroupInfoModal } from './GroupInfoModal';
+import { EnlargeableAvatar } from './EnlargeableAvatar';
 
 interface ChatViewProps {
   chat: ChatRoom;
@@ -336,42 +337,33 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
               <ArrowLeft className="w-5 h-5" />
             </button>
           )}
-          <div 
-            onClick={() => isGroup && setShowGroupInfoModal(true)}
-            className={`flex items-center gap-3.5 min-w-0 ${isGroup ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
-          >
-          <div className="relative shrink-0">
-            <img
+          <div className="flex items-center gap-3.5 min-w-0">
+            <EnlargeableAvatar
               src={avatarUrl}
               alt={title}
-              className="w-11 h-11 rounded-2xl object-cover bg-blue-50 ring-2 ring-blue-500/20"
+              name={title}
+              userProfile={!isGroup ? otherUser : undefined}
+              isGroup={isGroup}
+              memberCount={chat.participants?.length}
+              showStatusBadge={!isGroup}
+              showGroupBadge={isGroup}
+              sizeClass="w-11 h-11 rounded-2xl"
             />
-            {isGroup ? (
-              <span className="absolute -bottom-1 -right-1 px-1 py-0.5 bg-blue-600 text-white text-[9px] font-bold rounded-md ring-2 ring-white dark:ring-slate-900 flex items-center gap-0.5">
-                <Users2 className="w-2.5 h-2.5" />
-                {chat.participants?.length || 0}
-              </span>
-            ) : (
-              <span
-                className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white dark:ring-slate-900 transition-colors ${
-                  isUserOnline(otherUser) ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
-                }`}
-                title={isUserOnline(otherUser) ? 'Online' : 'Offline'}
-              />
-            )}
-          </div>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-sm text-slate-900 dark:text-white truncate">
-                {title}
-              </h3>
-              {!isGroup && (
-                <span className="text-xs font-mono text-blue-600 dark:text-blue-400 font-semibold shrink-0">
-                  @{otherUser?.username}{otherUser?.userTag}
-                </span>
-              )}
-            </div>
+            <div 
+              onClick={() => isGroup && setShowGroupInfoModal(true)}
+              className={`min-w-0 ${isGroup ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+            >
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                  {title}
+                </h3>
+                {!isGroup && (
+                  <span className="text-xs font-mono text-blue-600 dark:text-blue-400 font-semibold shrink-0">
+                    @{otherUser?.username}{otherUser?.userTag}
+                  </span>
+                )}
+              </div>
 
             {isGroup ? (
               <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
@@ -460,11 +452,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
               >
                 <div className="flex items-end gap-1.5 max-w-[88%] sm:max-w-[75%] relative">
                   {!isMe && (
-                    <img
+                    <EnlargeableAvatar
                       src={senderAvatar}
                       alt={senderDisplayName}
-                      className="w-8 h-8 rounded-xl object-cover bg-blue-50 shrink-0 mb-1"
-                      title={senderDisplayName}
+                      name={senderDisplayName}
+                      userProfile={isGroup ? senderProfile : otherUser}
+                      sizeClass="w-8 h-8 rounded-xl"
+                      className="shrink-0 mb-1"
                     />
                   )}
 

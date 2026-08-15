@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { ChatRoom, UserProfile } from '../types';
 import { addMembersToGroup, leaveGroup, updateGroupDetails } from '../services/chatService';
 import { Users, X, Shield, UserPlus, LogOut, Edit3, Check, Search, Crown } from 'lucide-react';
+import { EnlargeableAvatar } from './EnlargeableAvatar';
 
 interface GroupInfoModalProps {
   chat: ChatRoom;
@@ -129,11 +130,16 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
             <X className="w-5 h-5" />
           </button>
 
-          <img
-            src={chat.groupAvatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${chat.groupName}`}
-            alt={chat.groupName}
-            className="w-20 h-20 rounded-2xl object-cover ring-4 ring-white/20 shadow-lg bg-white/10 mb-3"
-          />
+          <div className="mb-3">
+            <EnlargeableAvatar
+              src={chat.groupAvatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${chat.groupName}`}
+              alt={chat.groupName}
+              name={chat.groupName}
+              isGroup={true}
+              memberCount={currentMemberUids.length}
+              sizeClass="w-20 h-20 rounded-2xl ring-4 ring-white/20 shadow-lg"
+            />
+          </div>
 
           <h2 className="text-xl font-bold tracking-tight text-white">{chat.groupName}</h2>
           <p className="text-xs text-blue-200 mt-1 font-medium">
@@ -212,10 +218,13 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
                   return (
                     <div key={member.uid} className="p-3.5 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3 min-w-0">
-                        <img
+                        <EnlargeableAvatar
                           src={member.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${member.username}`}
                           alt={member.displayName}
-                          className="w-10 h-10 rounded-xl object-cover bg-slate-100 dark:bg-slate-800"
+                          name={member.displayName}
+                          userProfile={member}
+                          showStatusBadge={true}
+                          sizeClass="w-10 h-10 rounded-xl"
                         />
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">

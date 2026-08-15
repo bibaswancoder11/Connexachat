@@ -5,6 +5,7 @@ import { UserProfile, FriendRequest } from '../types';
 import { searchUsers, isUserOnline } from '../services/userService';
 import { sendFriendRequest } from '../services/friendService';
 import { getOrCreateChat } from '../services/chatService';
+import { EnlargeableAvatar } from './EnlargeableAvatar';
 
 interface SearchUsersViewProps {
   friends: UserProfile[];
@@ -158,19 +159,14 @@ export const SearchUsersView: React.FC<SearchUsersViewProps> = ({
                     >
                       {/* Left User info */}
                       <div className="flex items-center gap-3.5 min-w-0">
-                        <div className="relative shrink-0">
-                          <img
-                            src={user.photoURL}
-                            alt={user.displayName}
-                            className="w-12 h-12 rounded-2xl object-cover bg-blue-50 ring-2 ring-slate-100 dark:ring-slate-700"
-                          />
-                          <span
-                            className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-white dark:ring-slate-800 transition-colors ${
-                              isUserOnline(user) ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
-                            }`}
-                            title={isUserOnline(user) ? 'Online' : 'Offline'}
-                          />
-                        </div>
+                        <EnlargeableAvatar
+                          src={user.photoURL}
+                          alt={user.displayName}
+                          name={user.displayName}
+                          userProfile={user}
+                          showStatusBadge={true}
+                          sizeClass="w-12 h-12 rounded-2xl"
+                        />
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="font-bold text-sm text-slate-900 dark:text-white truncate">

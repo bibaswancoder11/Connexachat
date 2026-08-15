@@ -270,6 +270,36 @@ export const isUserOnline = (user?: UserProfile | null): boolean => {
   }
 };
 
+export const formatLastSeen = (user?: UserProfile | null): string => {
+  if (!user) return 'Offline';
+  if (isUserOnline(user)) return 'Online';
+  if (!user.lastSeen) return 'Offline';
+  try {
+    let lastSeenMs = 0;
+    if (typeof user.lastSeen === 'number') {
+      lastSeenMs = user.lastSeen;
+    } else if (user.lastSeen?.toMillis && typeof user.lastSeen.toMillis === 'function') {
+      lastSeenMs = user.lastSeen.toMillis();
+    } else if (user.lastSeen?.seconds) {
+      lastSeenMs = user.lastSeen.seconds * 1000;
+    } else {
+      lastSeenMs = new Date(user.lastSeen).getTime();
+    }
+
+    if (isNaN(lastSeenMs) || lastSeenMs <= 0) return 'Offline';
+
+    const diffMinutes = Math.floor((Date.now() - lastSeenMs) / 60000);
+    if (diffMinutes < 1) return 'Active just now';
+    if (diffMinutes < 60) return `Active ${diffMinutes}m ago`;
+    const diffHours = Math.floor(diffMinutes / 60);
+    if (diffHours < 24) return `Active ${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `Active ${diffDays}d ago`;
+  } catch {
+    return 'Offline';
+  }
+};
+
 export const subscribeToUserProfile = (uid: string, callback: (profile: UserProfile | null) => void) => {
   return onSnapshot(
     doc(db, 'users', uid),

@@ -3,6 +3,7 @@ import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2 } 
 import { ChatRoom, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
+import { EnlargeableAvatar } from './EnlargeableAvatar';
 
 interface ChatListSidebarProps {
   chats: ChatRoom[];
@@ -183,27 +184,18 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                     : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
                 }`}
               >
-                {/* Avatar with Badge / Online Status */}
-                <div className="relative shrink-0">
-                  <img
-                    src={avatarUrl}
-                    alt={title}
-                    className="w-12 h-12 rounded-2xl object-cover bg-blue-50 dark:bg-slate-800 ring-2 ring-slate-100 dark:ring-slate-800"
-                  />
-                  {chat.isGroup ? (
-                    <span className="absolute -bottom-1 -right-1 px-1 py-0.5 bg-blue-600 text-white text-[9px] font-bold rounded-md ring-2 ring-white dark:ring-slate-900 flex items-center gap-0.5">
-                      <Users2 className="w-2.5 h-2.5" />
-                      {memberCount}
-                    </span>
-                  ) : (
-                    <span
-                      className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-white dark:ring-slate-900 transition-colors ${
-                        isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
-                      }`}
-                      title={isOnline ? 'Online' : 'Offline'}
-                    />
-                  )}
-                </div>
+                {/* Avatar with Badge / Online Status & Click-to-enlarge */}
+                <EnlargeableAvatar
+                  src={avatarUrl}
+                  alt={title}
+                  name={title}
+                  userProfile={chat.otherUser}
+                  isGroup={chat.isGroup}
+                  memberCount={memberCount}
+                  showStatusBadge={!chat.isGroup}
+                  showGroupBadge={chat.isGroup}
+                  sizeClass="w-12 h-12 rounded-2xl"
+                />
 
                 {/* Details */}
                 <div className="flex-1 min-w-0">

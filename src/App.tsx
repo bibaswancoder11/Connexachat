@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { AvatarPreviewProvider } from './context/AvatarPreviewContext';
 import { AuthModal } from './components/AuthModal';
 import { NavigationHeader } from './components/NavigationHeader';
 import { ChatListSidebar } from './components/ChatListSidebar';
@@ -9,7 +10,7 @@ import { FriendRequestsView } from './components/FriendRequestsView';
 import { CreateGroupModal } from './components/CreateGroupModal';
 import { NotificationToast, ToastNotificationData } from './components/NotificationToast';
 import { ChatRoom, FriendRequest, UserProfile } from './types';
-import { subscribeToUserChats } from './services/chatService';
+import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
 import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
@@ -193,141 +194,154 @@ const ConnexaApp: React.FC = () => {
     return <AuthModal />;
   }
 
+  const handleDirectChat = async (targetUid: string) => {
+    if (!userProfile) return;
+    try {
+      const chatId = await getOrCreateChat(userProfile.uid, targetUid);
+      setActiveChatId(chatId);
+      setActiveTab('chats');
+    } catch (err) {
+      console.error('Failed to open chat with user:', err);
+    }
+  };
+
   const activeChat = chats.find(c => c.id === activeChatId);
 
   return (
-    <div className="flex flex-col h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans overflow-hidden">
-      
-      {/* Top Navigation */}
-      <NavigationHeader
-        activeTab={activeTab}
-        onNavigateTab={setActiveTab}
-        unreadRequestsCount={incomingRequests.length}
-      />
-
-      {/* Main Workspace Layout */}
-      <div className="flex-1 flex overflow-hidden">
+    <AvatarPreviewProvider onOpenDirectChat={handleDirectChat}>
+      <div className="flex flex-col h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans overflow-hidden">
         
-        {/* Left Sidebar - Chat List & Controls */}
-        <div className={`${
-          activeTab === 'chats' && !activeChatId ? 'flex w-full md:w-80 lg:w-96' : 'hidden md:flex md:w-80 lg:w-96'
-        } shrink-0 h-full flex-col`}>
-          <ChatListSidebar
-            chats={chats}
-            activeChatId={activeChatId}
-            onSelectChat={(id) => {
-              setActiveChatId(id);
-              setActiveTab('chats');
-            }}
-            onNavigateTab={setActiveTab}
-            activeTab={activeTab}
-            unreadRequestsCount={incomingRequests.length}
-            onCreateGroupClick={() => setShowCreateGroupModal(true)}
-          />
-        </div>
+        {/* Top Navigation */}
+        <NavigationHeader
+          activeTab={activeTab}
+          onNavigateTab={setActiveTab}
+          unreadRequestsCount={incomingRequests.length}
+        />
 
-        {/* Main Content Pane depending on Active Tab */}
-        <div className={`${
-          activeTab === 'chats' && !activeChatId ? 'hidden md:flex' : 'flex'
-        } flex-1 flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-900`}>
-          {activeTab === 'chats' && (
-            activeChat ? (
-              <ChatView
-                chat={activeChat}
+        {/* Main Workspace Layout */}
+        <div className="flex-1 flex overflow-hidden">
+          
+          {/* Left Sidebar - Chat List & Controls */}
+          <div className={`${
+            activeTab === 'chats' && !activeChatId ? 'flex w-full md:w-80 lg:w-96' : 'hidden md:flex md:w-80 lg:w-96'
+          } shrink-0 h-full flex-col`}>
+            <ChatListSidebar
+              chats={chats}
+              activeChatId={activeChatId}
+              onSelectChat={(id) => {
+                setActiveChatId(id);
+                setActiveTab('chats');
+              }}
+              onNavigateTab={setActiveTab}
+              activeTab={activeTab}
+              unreadRequestsCount={incomingRequests.length}
+              onCreateGroupClick={() => setShowCreateGroupModal(true)}
+            />
+          </div>
+
+          {/* Main Content Pane depending on Active Tab */}
+          <div className={`${
+            activeTab === 'chats' && !activeChatId ? 'hidden md:flex' : 'flex'
+          } flex-1 flex-col h-full overflow-hidden bg-slate-50 dark:bg-slate-900`}>
+            {activeTab === 'chats' && (
+              activeChat ? (
+                <ChatView
+                  chat={activeChat}
+                  friends={friends}
+                  onGroupLeft={() => {
+                    setActiveChatId(null);
+                  }}
+                  onBackToChats={() => {
+                    setActiveChatId(null);
+                  }}
+                />
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
+                  <div className="p-5 bg-blue-100 dark:bg-slate-800 rounded-3xl text-blue-600 dark:text-blue-400 shadow-xs">
+                    <MessageSquare className="w-10 h-10" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-xl font-bold text-slate-800 dark:text-white">
+                      Select a conversation or create a group
+                    </h3>
+                    <p className="text-xs text-slate-500 max-w-sm mx-auto">
+                      Connexa lets you chat 1-on-1 with friends or create group chats with multiple friends!
+                    </p>
+                  </div>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setShowCreateGroupModal(true)}
+                      className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs flex items-center gap-2 shadow-md shadow-blue-600/20 transition-all"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      <span>Create Group Chat</span>
+                    </button>
+                    <button
+                      onClick={() => setActiveTab('search')}
+                      className="px-4 py-2.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold rounded-xl text-xs flex items-center gap-2 transition-all"
+                    >
+                      <UserPlus className="w-4 h-4 text-blue-500" />
+                      <span>Find Friends</span>
+                    </button>
+                  </div>
+                </div>
+              )
+            )}
+
+            {activeTab === 'search' && (
+              <SearchUsersView
                 friends={friends}
-                onGroupLeft={() => {
-                  setActiveChatId(null);
+                incomingRequests={incomingRequests}
+                outgoingRequests={outgoingRequests}
+                onSelectChat={(chatId) => {
+                  setActiveChatId(chatId);
+                  setActiveTab('chats');
                 }}
                 onBackToChats={() => {
+                  setActiveTab('chats');
                   setActiveChatId(null);
                 }}
               />
-            ) : (
-              <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
-                <div className="p-5 bg-blue-100 dark:bg-slate-800 rounded-3xl text-blue-600 dark:text-blue-400 shadow-xs">
-                  <MessageSquare className="w-10 h-10" />
-                </div>
-                <div className="space-y-1">
-                  <h3 className="text-xl font-bold text-slate-800 dark:text-white">
-                    Select a conversation or create a group
-                  </h3>
-                  <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                    Connexa lets you chat 1-on-1 with friends or create group chats with multiple friends!
-                  </p>
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={() => setShowCreateGroupModal(true)}
-                    className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl text-xs flex items-center gap-2 shadow-md shadow-blue-600/20 transition-all"
-                  >
-                    <PlusCircle className="w-4 h-4" />
-                    <span>Create Group Chat</span>
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('search')}
-                    className="px-4 py-2.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 font-semibold rounded-xl text-xs flex items-center gap-2 transition-all"
-                  >
-                    <UserPlus className="w-4 h-4 text-blue-500" />
-                    <span>Find Friends</span>
-                  </button>
-                </div>
-              </div>
-            )
-          )}
+            )}
 
-          {activeTab === 'search' && (
-            <SearchUsersView
-              friends={friends}
-              incomingRequests={incomingRequests}
-              outgoingRequests={outgoingRequests}
-              onSelectChat={(chatId) => {
-                setActiveChatId(chatId);
-                setActiveTab('chats');
-              }}
-              onBackToChats={() => {
-                setActiveTab('chats');
-                setActiveChatId(null);
-              }}
-            />
-          )}
-
-          {activeTab === 'requests' && (
-            <FriendRequestsView
-              incomingRequests={incomingRequests}
-              outgoingRequests={outgoingRequests}
-              friends={friends}
-              onSelectChat={(chatId) => {
-                setActiveChatId(chatId);
-                setActiveTab('chats');
-              }}
-              onBackToChats={() => {
-                setActiveTab('chats');
-                setActiveChatId(null);
-              }}
-            />
-          )}
+            {activeTab === 'requests' && (
+              <FriendRequestsView
+                incomingRequests={incomingRequests}
+                outgoingRequests={outgoingRequests}
+                friends={friends}
+                onSelectChat={(chatId) => {
+                  setActiveChatId(chatId);
+                  setActiveTab('chats');
+                }}
+                onBackToChats={() => {
+                  setActiveTab('chats');
+                  setActiveChatId(null);
+                }}
+              />
+            )}
+          </div>
         </div>
-      </div>
 
-      {/* Create Group Modal */}
-      {showCreateGroupModal && (
-        <CreateGroupModal
-          currentUserProfile={userProfile}
-          friends={friends}
-          onClose={() => setShowCreateGroupModal(false)}
-          onGroupCreated={(newChatId) => {
-            setActiveChatId(newChatId);
-            setActiveTab('chats');
-          }}
+        {/* Create Group Modal */}
+        {showCreateGroupModal && (
+          <CreateGroupModal
+            currentUserProfile={userProfile}
+            friends={friends}
+            onClose={() => setShowCreateGroupModal(false)}
+            onGroupCreated={(newChatId) => {
+              setActiveChatId(newChatId);
+              setActiveTab('chats');
+            }}
+          />
+        )}
+
+        {/* Real-time In-App Floating Toast Notification Banner */}
+        <NotificationToast
+          toast={toastNotification}
+          onClose={() => setToastNotification(null)}
         />
-      )}
-
-      {/* Real-time In-App Floating Toast Notification Banner */}
-      <NotificationToast
-        toast={toastNotification}
-        onClose={() => setToastNotification(null)}
-      />
-    </div>
+      </div>
+    </AvatarPreviewProvider>
   );
 };
 
