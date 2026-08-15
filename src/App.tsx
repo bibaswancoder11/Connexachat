@@ -7,10 +7,11 @@ import { ChatView } from './components/ChatView';
 import { SearchUsersView } from './components/SearchUsersView';
 import { FriendRequestsView } from './components/FriendRequestsView';
 import { CreateGroupModal } from './components/CreateGroupModal';
+import { NotificationToast, ToastNotificationData } from './components/NotificationToast';
 import { ChatRoom, FriendRequest, UserProfile } from './types';
 import { subscribeToUserChats } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
-import { requestNotificationPermission, sendWebNotification, playNotificationChime } from './services/notificationService';
+import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 
 const ConnexaApp: React.FC = () => {
@@ -25,18 +26,46 @@ const ConnexaApp: React.FC = () => {
   const [friends, setFriends] = useState<UserProfile[]>([]);
 
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
   // Keep track of previous chat messages & request counts to trigger notifications
   const prevChatsRef = useRef<ChatRoom[]>([]);
   const prevRequestsCountRef = useRef<number>(0);
   const isFirstLoadRef = useRef<boolean>(true);
 
-  // Ask for Push Notification permission on load
+  // Ask for Push Notification permission & register Service Worker on load
   useEffect(() => {
     if (currentUser) {
       requestNotificationPermission();
+      initServiceWorker();
+      try {
+        localStorage.setItem('connexa_last_uid', currentUser.uid);
+      } catch (e) {
+        // ignore
+      }
     }
   }, [currentUser]);
+
+  // Update Browser Document Title badge with unread messages + requests count
+  useEffect(() => {
+    if (!currentUser) {
+      document.title = 'Connexa Messenger';
+      return;
+    }
+
+    const totalUnreadChats = chats.reduce((sum, chat) => {
+      const count = chat.unreadCounts?.[currentUser.uid] || 0;
+      return sum + count;
+    }, 0);
+
+    const totalUnread = totalUnreadChats + incomingRequests.length;
+
+    if (totalUnread > 0) {
+      document.title = `(${totalUnread}) Connexa Messenger`;
+    } else {
+      document.title = 'Connexa Messenger';
+    }
+  }, [chats, incomingRequests, currentUser]);
 
   // Subscriptions when user is logged in
   useEffect(() => {
@@ -44,7 +73,7 @@ const ConnexaApp: React.FC = () => {
 
     // Real-time chats subscription
     const unsubscribeChats = subscribeToUserChats(currentUser.uid, (chatList) => {
-      // Check for new messages to trigger push notification
+      // Check for new messages to trigger push & in-app toast notification
       if (!isFirstLoadRef.current) {
         chatList.forEach((chat) => {
           const prevChat = prevChatsRef.current.find(c => c.id === chat.id);
@@ -56,12 +85,32 @@ const ConnexaApp: React.FC = () => {
               ? (chat.groupName || 'Group Chat') 
               : (chat.otherUser?.displayName || 'Friend');
 
-            sendWebNotification(
-              chat.isGroup ? `New message in ${chat.groupName}` : `New message from ${senderName}`,
-              chat.lastMessage || 'Sent a message',
-              chat.isGroup ? chat.groupAvatar : chat.otherUser?.photoURL
-            );
+            const avatar = chat.isGroup ? chat.groupAvatar : chat.otherUser?.photoURL;
+            const notifTitle = chat.isGroup ? `Message in ${chat.groupName}` : `Message from ${senderName}`;
+            const notifBody = chat.lastMessage || 'Sent a new message';
+
+            // Send System Web / Service Worker Notification
+            sendWebNotification(notifTitle, notifBody, avatar, () => {
+              setActiveChatId(chat.id);
+              setActiveTab('chats');
+            });
+
+            // Play audio chime
             playNotificationChime(chat.isGroup ? 'group' : 'message');
+
+            // Trigger floating In-App Toast
+            setToastNotification({
+              id: `${chat.id}_${Date.now()}`,
+              type: 'message',
+              title: notifTitle,
+              body: notifBody,
+              avatar: avatar,
+              chatId: chat.id,
+              onAction: () => {
+                setActiveChatId(chat.id);
+                setActiveTab('chats');
+              }
+            });
           }
         });
       }
@@ -82,12 +131,28 @@ const ConnexaApp: React.FC = () => {
       
       if (!isFirstLoadRef.current && pendingReqs.length > prevRequestsCountRef.current) {
         const latest = pendingReqs[0];
-        sendWebNotification(
-          'New Friend Request 🤝',
-          `${latest.fromDisplayName || 'Someone'} sent you a friend request on Connexa!`,
-          latest.fromPhotoURL
-        );
+        const reqTitle = 'New Friend Request 🤝';
+        const reqBody = `${latest.fromDisplayName || 'Someone'} sent you a friend request on Connexa!`;
+
+        // Send System Web / Service Worker Notification
+        sendWebNotification(reqTitle, reqBody, latest.fromPhotoURL, () => {
+          setActiveTab('requests');
+        });
+
+        // Play audio chime
         playNotificationChime('request');
+
+        // Trigger floating In-App Toast
+        setToastNotification({
+          id: `req_${Date.now()}`,
+          type: 'request',
+          title: reqTitle,
+          body: reqBody,
+          avatar: latest.fromPhotoURL,
+          onAction: () => {
+            setActiveTab('requests');
+          }
+        });
       }
 
       prevRequestsCountRef.current = pendingReqs.length;
@@ -256,6 +321,12 @@ const ConnexaApp: React.FC = () => {
           }}
         />
       )}
+
+      {/* Real-time In-App Floating Toast Notification Banner */}
+      <NotificationToast
+        toast={toastNotification}
+        onClose={() => setToastNotification(null)}
+      />
     </div>
   );
 };

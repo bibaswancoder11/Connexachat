@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2 } from 'lucide-react';
 import { ChatRoom, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
+import { isUserOnline } from '../services/userService';
 
 interface ChatListSidebarProps {
   chats: ChatRoom[];
@@ -167,6 +168,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
               : (chat.otherUser?.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${chat.id}`);
 
             const memberCount = chat.participants?.length || 0;
+            const isOnline = !chat.isGroup && isUserOnline(chat.otherUser);
 
             return (
               <button
@@ -181,7 +183,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                     : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
                 }`}
               >
-                {/* Avatar with Badge */}
+                {/* Avatar with Badge / Online Status */}
                 <div className="relative shrink-0">
                   <img
                     src={avatarUrl}
@@ -194,7 +196,12 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                       {memberCount}
                     </span>
                   ) : (
-                    <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 ring-2 ring-white dark:ring-slate-900 rounded-full" />
+                    <span
+                      className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-white dark:ring-slate-900 transition-colors ${
+                        isOnline ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
+                      }`}
+                      title={isOnline ? 'Online' : 'Offline'}
+                    />
                   )}
                 </div>
 

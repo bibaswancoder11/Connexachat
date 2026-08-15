@@ -10,7 +10,7 @@ import {
 import { auth } from '../firebase';
 import { serverTimestamp } from 'firebase/firestore';
 import { UserProfile } from '../types';
-import { getUserProfile, createUserProfile, updateUserProfile, withTimeout, findAccountByEmail, checkUsernameAvailable } from '../services/userService';
+import { getUserProfile, createUserProfile, updateUserProfile, withTimeout, findAccountByEmail, checkUsernameAvailable, updateUserPresence } from '../services/userService';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -88,6 +88,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => unsubscribe();
   }, []);
+
+  // Periodically update user's lastSeen timestamp in Firestore while active
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+
+    const uid = currentUser.uid;
+    // Initial update on active session
+    updateUserPresence(uid, 'online');
+
+    const interval = setInterval(() => {
+      updateUserPresence(uid, 'online');
+    }, 45000); // Heartbeat every 45s
+
+    const handleUnload = () => {
+      updateUserPresence(uid, 'offline');
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', handleUnload);
+    };
+  }, [currentUser?.uid]);
 
   const registerWithEmail = async (
     email: string, 
@@ -265,6 +289,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logout = async () => {
+    if (currentUser?.uid) {
+      await updateUserPresence(currentUser.uid, 'offline').catch(() => {});
+    }
     localStorage.removeItem(DEMO_GUEST_KEY);
     try {
       await signOut(auth);

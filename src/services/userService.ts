@@ -8,7 +8,8 @@ import {
   getDocs, 
   serverTimestamp, 
   limit,
-  where
+  where,
+  onSnapshot
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { UserProfile } from '../types';
@@ -170,6 +171,70 @@ export const updateUserProfile = async (
   } catch (e) {
     console.warn('Firestore update profile warning:', e);
   }
+};
+
+export const updateUserPresence = async (uid: string, status: 'online' | 'offline' = 'online'): Promise<void> => {
+  if (!uid) return;
+  try {
+    const ref = doc(db, 'users', uid);
+    await updateDoc(ref, {
+      status,
+      lastSeen: serverTimestamp()
+    });
+  } catch (e) {
+    console.warn('Firestore presence update warning:', e);
+  }
+};
+
+export const isUserOnline = (user?: UserProfile | null): boolean => {
+  if (!user) return false;
+  if (user.status === 'offline') return false;
+
+  if (!user.lastSeen) {
+    return user.status === 'online';
+  }
+
+  try {
+    let lastSeenMs: number = 0;
+    if (typeof user.lastSeen === 'number') {
+      lastSeenMs = user.lastSeen;
+    } else if (user.lastSeen?.toMillis && typeof user.lastSeen.toMillis === 'function') {
+      lastSeenMs = user.lastSeen.toMillis();
+    } else if (user.lastSeen?.seconds) {
+      lastSeenMs = user.lastSeen.seconds * 1000;
+    } else {
+      lastSeenMs = new Date(user.lastSeen).getTime();
+    }
+
+    if (isNaN(lastSeenMs) || lastSeenMs <= 0) {
+      return user.status === 'online';
+    }
+
+    // Consider online if active within last 3 minutes (180,000 ms)
+    const THREE_MINUTES = 3 * 60 * 1000;
+    const now = Date.now();
+    return (now - lastSeenMs) < THREE_MINUTES;
+  } catch {
+    return user.status === 'online';
+  }
+};
+
+export const subscribeToUserProfile = (uid: string, callback: (profile: UserProfile | null) => void) => {
+  return onSnapshot(
+    doc(db, 'users', uid),
+    (docSnap) => {
+      if (docSnap.exists()) {
+        const prof = docSnap.data() as UserProfile;
+        saveLocalRegisteredAccount(prof);
+        callback(prof);
+      } else {
+        callback(null);
+      }
+    },
+    (err) => {
+      console.warn(`Error subscribing to user profile ${uid}:`, err);
+    }
+  );
 };
 
 export const searchUsers = async (searchTerm: string, currentUid: string): Promise<UserProfile[]> => {

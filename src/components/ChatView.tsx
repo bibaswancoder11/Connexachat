@@ -16,10 +16,19 @@ import {
   Check,
   ArrowLeft,
   Copy,
-  MoreVertical
+  MoreVertical,
+  Download,
+  ZoomIn,
+  ZoomOut,
+  Maximize2,
+  Loader2,
+  ImageOff,
+  ExternalLink
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { isUserOnline } from '../services/userService';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
+import { compressImage, downloadImageDataUrl } from '../utils/imageUtils';
 import { 
   subscribeToMessages, 
   sendMessage, 
@@ -52,6 +61,11 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
   
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [isCompressingImage, setIsCompressingImage] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [lightboxZoom, setLightboxZoom] = useState(1);
+  const [failedImageIds, setFailedImageIds] = useState<{ [msgId: string]: boolean }>({});
+
   const [showEmojiPicker, setShowEmojiPicker] = useState<string | null>(null); // messageId
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -64,6 +78,18 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const recordingTimerRef = useRef<any>(null);
+
+  // Keyboard shortcut listener for Lightbox (ESC to close)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && previewImage) {
+        setPreviewImage(null);
+        setLightboxZoom(1);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewImage]);
 
   // Subscribe to real-time messages
   useEffect(() => {
@@ -92,10 +118,89 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     }
   };
 
-  // Send Text Message
+  // Process & compress an image file before attaching
+  const processAndSetImageFile = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please select a valid image file (PNG, JPG, WebP, GIF).');
+      return;
+    }
+    if (file.size > 15 * 1024 * 1024) {
+      alert('Image file is too large. Please select an image under 15MB.');
+      return;
+    }
+    setIsCompressingImage(true);
+    try {
+      const compressed = await compressImage(file, {
+        maxWidth: 1200,
+        maxHeight: 1200,
+        quality: 0.82
+      });
+      setSelectedImage(compressed);
+    } catch (err) {
+      console.error('Failed to process image:', err);
+      alert('Could not process image. Please try another photo.');
+    } finally {
+      setIsCompressingImage(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  // Handle Image File Input
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processAndSetImageFile(file);
+    }
+  };
+
+  // Clipboard paste image support
+  const handlePaste = (e: React.ClipboardEvent) => {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') === 0) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          processAndSetImageFile(file);
+          break;
+        }
+      }
+    }
+  };
+
+  // Drag and drop image handlers
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDraggingOver) setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingOver(false);
+    const files = e.dataTransfer.files;
+    if (files && files.length > 0) {
+      const file = files[0];
+      if (file.type.startsWith('image/')) {
+        processAndSetImageFile(file);
+      }
+    }
+  };
+
+  // Send Text / Image Message
   const handleSendText = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if ((!inputText.trim() && !selectedImage) || !userProfile || !chat.id) return;
+    if ((!inputText.trim() && !selectedImage) || !userProfile || !chat.id || isCompressingImage) return;
 
     const textToSend = inputText.trim();
     const imgToSend = selectedImage;
@@ -106,30 +211,13 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
 
     try {
       if (imgToSend) {
-        await sendMessage(chat.id, userProfile.uid, textToSend || 'Image Attachment', 'image', imgToSend, userProfile);
+        await sendMessage(chat.id, userProfile.uid, textToSend, 'image', imgToSend, userProfile);
       } else {
         await sendMessage(chat.id, userProfile.uid, textToSend, 'text', undefined, userProfile);
       }
     } catch (err) {
       console.error('Error sending message:', err);
-    }
-  };
-
-  // Handle Image Upload
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        alert('Image must be under 5MB');
-        return;
-      }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          setSelectedImage(reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
+      alert('Failed to send message. Please check your connection and try again.');
     }
   };
 
@@ -219,7 +307,22 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     : (otherUser?.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${chat.id}`);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 overflow-hidden relative">
+    <div 
+      className="flex-1 flex flex-col h-full bg-slate-50 dark:bg-slate-950 overflow-hidden relative"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {/* Drag Over Visual Overlay */}
+      {isDraggingOver && (
+        <div className="absolute inset-0 z-40 bg-blue-600/90 backdrop-blur-xs flex flex-col items-center justify-center text-white space-y-3 p-6 pointer-events-none animate-in fade-in duration-150">
+          <div className="p-4 bg-white/20 rounded-full animate-bounce">
+            <ImageIcon className="w-10 h-10 text-white" />
+          </div>
+          <h3 className="text-lg font-bold">Drop Image to Share</h3>
+          <p className="text-xs text-blue-100">Release file to attach photo to this chat</p>
+        </div>
+      )}
       
       {/* Top Chat Header */}
       <div className="px-4 md:px-6 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shadow-2xs z-10">
@@ -249,7 +352,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                 {chat.participants?.length || 0}
               </span>
             ) : (
-              <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 ring-2 ring-white dark:ring-slate-900 rounded-full" />
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white dark:ring-slate-900 transition-colors ${
+                  isUserOnline(otherUser) ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
+                }`}
+                title={isUserOnline(otherUser) ? 'Online' : 'Offline'}
+              />
             )}
           </div>
 
@@ -269,10 +377,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
               <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
                 <span>{chat.participants?.length || 0} members • Click for info</span>
               </p>
-            ) : (
+            ) : isUserOnline(otherUser) ? (
               <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span>Online</span>
+              </p>
+            ) : (
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                <span>Offline</span>
               </p>
             )}
           </div>
@@ -375,8 +488,36 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
 
                     {/* Image attachment */}
                     {msg.type === 'image' && msg.mediaUrl && (
-                      <div className="overflow-hidden rounded-xl max-w-xs cursor-pointer" onClick={(e) => { e.stopPropagation(); setPreviewImage(msg.mediaUrl || null); }}>
-                        <img src={msg.mediaUrl} alt="Attached Media" className="w-full h-auto object-cover hover:scale-105 transition-transform" />
+                      <div className="space-y-1 my-1">
+                        {failedImageIds[msg.id] ? (
+                          <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-700/60 border border-slate-200 dark:border-slate-600 flex items-center gap-2 text-slate-500 text-xs">
+                            <ImageOff className="w-4 h-4 text-slate-400" />
+                            <span>Image unavailable or corrupted</span>
+                          </div>
+                        ) : (
+                          <div
+                            className="relative group/img overflow-hidden rounded-xl max-w-xs cursor-pointer border border-slate-200/50 dark:border-slate-700/50 shadow-xs"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPreviewImage(msg.mediaUrl || null);
+                              setLightboxZoom(1);
+                            }}
+                          >
+                            <img
+                              src={msg.mediaUrl}
+                              alt="Attached Media"
+                              onError={() => {
+                                setFailedImageIds(prev => ({ ...prev, [msg.id]: true }));
+                              }}
+                              className="w-full max-h-72 object-cover rounded-xl hover:scale-102 transition-transform duration-200"
+                            />
+                            <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-2 text-white">
+                              <div className="p-2 bg-black/60 rounded-full backdrop-blur-xs">
+                                <Maximize2 className="w-4 h-4" />
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -521,28 +662,44 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Selected Image Preview before sending */}
-      {selectedImage && (
-        <div className="p-3 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover" />
-            <div>
-              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">Image attached</span>
-              <span className="text-[10px] text-slate-400">Ready to send</span>
+      {/* Selected Image Preview / Compression indicator before sending */}
+      {(selectedImage || isCompressingImage) && (
+        <div className="p-3 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <div className="flex items-center gap-3 min-w-0">
+            {isCompressingImage ? (
+              <div className="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-950/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
+                <Loader2 className="w-6 h-6 animate-spin" />
+              </div>
+            ) : (
+              selectedImage && (
+                <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover ring-2 ring-blue-500/30 shrink-0" />
+              )
+            )}
+            <div className="min-w-0">
+              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block truncate">
+                {isCompressingImage ? 'Optimizing image...' : 'Image Attached'}
+              </span>
+              <span className="text-[10px] text-slate-500 dark:text-slate-400 block truncate">
+                {isCompressingImage ? 'Compressing for instant sharing' : 'Add optional text caption below and press Send'}
+              </span>
             </div>
           </div>
-          <button
-            onClick={() => setSelectedImage(null)}
-            className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!isCompressingImage && selectedImage && (
+            <button
+              type="button"
+              onClick={() => setSelectedImage(null)}
+              className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shrink-0"
+              title="Remove image"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
       )}
 
       {/* Input Control Bar */}
       <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
-        <form onSubmit={handleSendText} className="flex items-center gap-2">
+        <form onSubmit={handleSendText} onPaste={handlePaste} className="flex items-center gap-2">
           
           {/* File input for images */}
           <input
@@ -556,8 +713,9 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            title="Attach image"
+            disabled={isCompressingImage}
+            className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+            title="Attach image (or drag & drop / paste)"
           >
             <ImageIcon className="w-5 h-5" />
           </button>
@@ -588,28 +746,93 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
             type="text"
             value={inputText}
             onChange={handleInputChange}
-            placeholder={isGroup ? `Message ${title}...` : `Message ${title}...`}
+            placeholder={isGroup ? `Message ${title}... (paste or drop images)` : `Message ${title}... (paste or drop images)`}
             className="flex-1 py-3 px-4 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl text-xs md:text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 text-slate-900 dark:text-white"
           />
 
           {/* Send button */}
           <button
             type="submit"
-            disabled={!inputText.trim() && !selectedImage}
+            disabled={(!inputText.trim() && !selectedImage) || isCompressingImage}
             className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none"
+            title="Send Message"
           >
             <Send className="w-4 h-4" />
           </button>
         </form>
       </div>
 
-      {/* Modal image lightbox */}
+      {/* Interactive Fullscreen Image Lightbox Modal */}
       {previewImage && (
         <div
-          onClick={() => setPreviewImage(null)}
-          className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4 cursor-pointer"
+          onClick={() => { setPreviewImage(null); setLightboxZoom(1); }}
+          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col justify-between p-4 sm:p-6 animate-in fade-in duration-150 cursor-default select-none"
         >
-          <img src={previewImage} alt="Fullscreen Preview" className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl" />
+          {/* Lightbox Controls Header */}
+          <div className="flex items-center justify-between z-10 w-full max-w-5xl mx-auto bg-slate-900/80 backdrop-blur-md p-3 rounded-2xl border border-white/10 text-white shadow-2xl">
+            <div className="flex items-center gap-2">
+              <ImageIcon className="w-4 h-4 text-blue-400" />
+              <span className="text-xs font-medium text-slate-200">Shared Image Viewer</span>
+            </div>
+            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => setLightboxZoom(z => Math.max(0.5, z - 0.25))}
+                className="p-2 text-slate-300 hover:text-white rounded-xl hover:bg-white/10 transition-colors"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </button>
+              <span className="text-xs font-mono text-slate-400 min-w-[40px] text-center">
+                {Math.round(lightboxZoom * 100)}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setLightboxZoom(z => Math.min(3, z + 0.25))}
+                className="p-2 text-slate-300 hover:text-white rounded-xl hover:bg-white/10 transition-colors"
+                title="Zoom In"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => downloadImageDataUrl(previewImage, `connexa-shared-image-${Date.now()}.jpg`)}
+                className="p-2 text-blue-400 hover:text-blue-300 rounded-xl hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold"
+                title="Download Image"
+              >
+                <Download className="w-4 h-4" />
+                <span className="hidden sm:inline">Download</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => { setPreviewImage(null); setLightboxZoom(1); }}
+                className="p-2 text-slate-400 hover:text-rose-400 rounded-xl hover:bg-white/10 transition-colors ml-2"
+                title="Close (Esc)"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          {/* Center Image Canvas */}
+          <div
+            className="flex-1 flex items-center justify-center overflow-auto p-4 my-2"
+            onClick={() => { setPreviewImage(null); setLightboxZoom(1); }}
+          >
+            <img
+              src={previewImage}
+              alt="Fullscreen Preview"
+              style={{ transform: `scale(${lightboxZoom})` }}
+              onClick={(e) => e.stopPropagation()}
+              className="max-w-full max-h-[82vh] rounded-2xl object-contain shadow-2xl transition-transform duration-200 cursor-zoom-in"
+              onDoubleClick={() => setLightboxZoom(z => z === 1 ? 1.75 : 1)}
+            />
+          </div>
+
+          {/* Footer Instructions */}
+          <div className="text-center text-slate-400 text-[11px] font-medium">
+            Click background or press Esc to close • Double-click image to zoom
+          </div>
         </div>
       )}
 

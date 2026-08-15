@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react';
-import { Camera, RefreshCw, Upload, Check } from 'lucide-react';
+import { Camera, RefreshCw, Upload, Check, Loader2 } from 'lucide-react';
+import { compressImage } from '../utils/imageUtils';
 
 interface AvatarPickerProps {
   currentPhotoURL: string;
@@ -29,20 +30,33 @@ export const AvatarPicker: React.FC<AvatarPickerProps> = ({
     return `https://api.dicebear.com/7.x/${style}/svg?seed=${encodeURIComponent(customSeed)}`;
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
-      if (file.size > 3 * 1024 * 1024) {
-        alert('File size must be under 3MB');
+      if (file.size > 10 * 1024 * 1024) {
+        alert('File size must be under 10MB');
         return;
       }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (typeof reader.result === 'string') {
-          onSelectPhoto(reader.result);
+      setIsProcessing(true);
+      try {
+        const compressed = await compressImage(file, {
+          maxWidth: 320,
+          maxHeight: 320,
+          quality: 0.85,
+          mimeType: 'image/jpeg'
+        });
+        onSelectPhoto(compressed);
+      } catch (err) {
+        console.error('Error compressing avatar image:', err);
+        alert('Failed to process image. Please try another photo.');
+      } finally {
+        setIsProcessing(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
         }
-      };
-      reader.readAsDataURL(file);
+      }
     }
   };
 

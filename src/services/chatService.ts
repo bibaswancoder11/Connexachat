@@ -20,7 +20,7 @@ import {
 import { db } from '../firebase';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
 import { getFriendshipId } from './friendService';
-import { getUserProfile } from './userService';
+import { getUserProfile, saveLocalRegisteredAccount } from './userService';
 
 export const getOrCreateChat = async (uid1: string, uid2: string): Promise<string> => {
   const chatId = getFriendshipId(uid1, uid2);
@@ -210,7 +210,10 @@ export const subscribeToUserChats = (
     where('participants', 'array-contains', currentUid)
   );
 
-  return onSnapshot(
+  const userListeners: { [uid: string]: () => void } = {};
+  const userProfilesCache: { [uid: string]: UserProfile } = {};
+
+  const unsubChats = onSnapshot(
     q, 
     async (snapshot) => {
       const chatDocs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }) as ChatRoom);
@@ -222,42 +225,91 @@ export const subscribeToUserChats = (
         return timeB - timeA;
       });
 
-      // Populate otherUser profile for 1-on-1 AND participantProfiles for groups
-      const populatedChats = await Promise.all(
-        chatDocs.map(async (chat) => {
+      // Collect all unique participant user IDs
+      const neededUids = new Set<string>();
+      chatDocs.forEach(chat => {
+        chat.participants.forEach(pUid => {
+          if (pUid !== currentUid) {
+            neededUids.add(pUid);
+          }
+        });
+      });
+
+      const emitPopulatedChats = () => {
+        const populatedChats = chatDocs.map(chat => {
           if (!chat.isGroup) {
             const otherUid = chat.participants.find(u => u !== currentUid);
-            let otherUser: UserProfile | undefined = undefined;
-            if (otherUid) {
-              otherUser = (await getUserProfile(otherUid)) || undefined;
-            }
+            const otherUser = otherUid ? userProfilesCache[otherUid] : undefined;
             return {
               ...chat,
               otherUser
             };
           } else {
-            // Fetch profiles of all members in group
             const profiles: { [uid: string]: UserProfile } = {};
-            await Promise.all(
-              chat.participants.map(async (uid) => {
-                const p = await getUserProfile(uid);
-                if (p) profiles[uid] = p;
-              })
-            );
+            chat.participants.forEach(uid => {
+              if (userProfilesCache[uid]) {
+                profiles[uid] = userProfilesCache[uid];
+              }
+            });
             return {
               ...chat,
               participantProfiles: profiles
             };
           }
+        });
+        callback(populatedChats);
+      };
+
+      // Ensure real-time snapshot listener on each participant user document
+      neededUids.forEach(uid => {
+        if (!userListeners[uid]) {
+          userListeners[uid] = onSnapshot(
+            doc(db, 'users', uid),
+            (userSnap) => {
+              if (userSnap.exists()) {
+                const prof = userSnap.data() as UserProfile;
+                userProfilesCache[uid] = prof;
+                saveLocalRegisteredAccount(prof);
+              }
+              emitPopulatedChats();
+            },
+            (err) => {
+              console.warn(`User profile snapshot listener warning for ${uid}:`, err);
+            }
+          );
+        }
+      });
+
+      // Clean up listeners for users no longer in any active chat
+      Object.keys(userListeners).forEach(uid => {
+        if (!neededUids.has(uid)) {
+          userListeners[uid]();
+          delete userListeners[uid];
+          delete userProfilesCache[uid];
+        }
+      });
+
+      // Fetch initial profiles if not in cache yet
+      await Promise.all(
+        Array.from(neededUids).map(async (uid) => {
+          if (!userProfilesCache[uid]) {
+            const p = await getUserProfile(uid);
+            if (p) userProfilesCache[uid] = p;
+          }
         })
       );
 
-      callback(populatedChats);
+      emitPopulatedChats();
     },
     (err) => {
       console.warn('Error listening to user chats:', err);
     }
   );
+
+  return () => {
+    unsubChats();
+    Object.values(userListeners).forEach(unsub => unsub());
+  };
 };
 
 export const subscribeToMessages = (
@@ -293,7 +345,7 @@ export const sendMessage = async (
   const messagesRef = collection(db, 'chats', chatId, 'messages');
   
   let previewText = text;
-  if (type === 'image') previewText = '📷 Photo';
+  if (type === 'image') previewText = text.trim() ? `📷 ${text.trim()}` : '📷 Photo';
   if (type === 'audio') previewText = '🎤 Voice Note';
 
   const newMessage = {

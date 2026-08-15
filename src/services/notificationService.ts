@@ -1,6 +1,34 @@
-// Notification service providing Web Push Notifications, Sound Chimes (via Web Audio API), and Permission Management
+// Notification service providing Web Push Notifications, Service Worker integration, Sound Chimes (via Web Audio API), and Permission Management
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default';
+
+let swRegistration: ServiceWorkerRegistration | null = null;
+
+// Register Service Worker for background notifications on GitHub Pages or local environments
+export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return null;
+  }
+
+  try {
+    const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+    swRegistration = reg;
+    console.log('Connexa Service Worker registered successfully with scope:', reg.scope);
+    return reg;
+  } catch (err) {
+    console.warn('Service Worker registration warning:', err);
+    return null;
+  }
+};
+
+export const isInIframe = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch (e) {
+    return true;
+  }
+};
 
 export const getNotificationPermission = (): NotificationPermissionState => {
   if (typeof window === 'undefined' || !('Notification' in window)) {
@@ -15,20 +43,33 @@ export const requestNotificationPermission = async (): Promise<NotificationPermi
   }
 
   try {
-    const permission = await Notification.requestPermission();
-    return permission as NotificationPermissionState;
+    let currentPerm = Notification.permission;
+    if (currentPerm === 'default') {
+      // Browsers disallow Notification.requestPermission() in cross-origin iframes
+      if (isInIframe()) {
+        console.warn('Notification permission request skipped inside iframe preview context.');
+        return 'default';
+      }
+      currentPerm = await Notification.requestPermission();
+    }
+    
+    if (currentPerm === 'granted') {
+      await initServiceWorker();
+    }
+    return currentPerm as NotificationPermissionState;
   } catch (err) {
     console.warn('Failed to request notification permission:', err);
-    return 'denied';
+    return getNotificationPermission();
   }
 };
 
-export const showWebNotification = (
+export const showWebNotification = async (
   title: string,
   options?: {
     body?: string;
     icon?: string;
     tag?: string;
+    data?: any;
     onClick?: () => void;
   }
 ) => {
@@ -36,10 +77,33 @@ export const showWebNotification = (
 
   if (Notification.permission === 'granted') {
     try {
+      const defaultIcon = 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa';
+      const notificationIcon = options?.icon || defaultIcon;
+
+      // Prefer Service Worker notification if available for background reliability
+      if (!swRegistration && 'serviceWorker' in navigator) {
+        swRegistration = await navigator.serviceWorker.ready.catch(() => null);
+      }
+
+      if (swRegistration && 'showNotification' in swRegistration) {
+        await swRegistration.showNotification(title, {
+          body: options?.body || '',
+          icon: notificationIcon,
+          badge: notificationIcon,
+          tag: options?.tag || 'connexa-notification',
+          data: options?.data || {},
+          vibrate: [200, 100, 200],
+          renotify: true
+        } as NotificationOptions & { vibrate?: number[]; renotify?: boolean });
+        return;
+      }
+
+      // Fallback to standard Window Notification constructor
       const notification = new Notification(title, {
         body: options?.body || '',
-        icon: options?.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+        icon: notificationIcon,
         tag: options?.tag,
+        data: options?.data,
       });
 
       if (options?.onClick) {
@@ -140,4 +204,16 @@ export const playNotificationSound = (type: 'message' | 'request' | 'group' = 'm
 };
 
 export const playNotificationChime = playNotificationSound;
+
+export const testNotification = async () => {
+  const perm = await requestNotificationPermission();
+  playNotificationSound('message');
+  if (perm === 'granted') {
+    showWebNotification('Connexa Test Notification 🔔', {
+      body: 'Real-time background & sound notifications are active on this device!',
+      icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa-test'
+    });
+  }
+};
+
 

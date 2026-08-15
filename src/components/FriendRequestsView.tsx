@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { UserCheck, UserX, Clock, MessageSquare, Trash2, Users, Inbox, SendHorizontal, ShieldCheck, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { FriendRequest, UserProfile } from '../types';
+import { isUserOnline } from '../services/userService';
 import { acceptFriendRequest, rejectOrCancelFriendRequest, removeFriend } from '../services/friendService';
 import { getOrCreateChat } from '../services/chatService';
 
@@ -159,7 +160,12 @@ export const FriendRequestsView: React.FC<FriendRequestsViewProps> = ({
                           alt={friend.displayName}
                           className="w-12 h-12 rounded-2xl object-cover bg-blue-50 ring-2 ring-slate-100 dark:ring-slate-700"
                         />
-                        <span className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 bg-emerald-500 ring-2 ring-white dark:ring-slate-800 rounded-full" />
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full ring-2 ring-white dark:ring-slate-800 transition-colors ${
+                            isUserOnline(friend) ? 'bg-emerald-500' : 'bg-slate-400 dark:bg-slate-500'
+                          }`}
+                          title={isUserOnline(friend) ? 'Online' : 'Offline'}
+                        />
                       </div>
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
