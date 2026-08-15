@@ -26,6 +26,14 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
     setIframeNotice(isInIframe());
   }, []);
 
+  useEffect(() => {
+    if (userProfile) {
+      setDisplayName(userProfile.displayName || '');
+      setPhotoURL(userProfile.photoURL || '');
+      setBio(userProfile.bio !== undefined ? userProfile.bio : '');
+    }
+  }, [userProfile?.uid, userProfile?.displayName, userProfile?.photoURL, userProfile?.bio]);
+
   const handleEnableNotifications = async () => {
     setNotifSuccess(null);
     if (isInIframe()) {

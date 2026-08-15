@@ -5,12 +5,24 @@ import {
   createUserWithEmailAndPassword, 
   signOut, 
   signInAnonymously,
+  updateProfile as updateAuthProfile,
   User 
 } from 'firebase/auth';
 import { auth } from '../firebase';
 import { serverTimestamp } from 'firebase/firestore';
 import { UserProfile } from '../types';
-import { getUserProfile, createUserProfile, updateUserProfile, withTimeout, findAccountByEmail, checkUsernameAvailable, updateUserPresence } from '../services/userService';
+import { 
+  getUserProfile, 
+  createUserProfile, 
+  updateUserProfile, 
+  withTimeout, 
+  findAccountByEmail, 
+  checkUsernameAvailable, 
+  updateUserPresence,
+  subscribeToUserProfile,
+  getLocalRegisteredAccounts,
+  saveLocalRegisteredAccount
+} from '../services/userService';
 
 interface AuthContextType {
   currentUser: User | null;
@@ -30,40 +42,82 @@ const DEMO_GUEST_KEY = 'connexa_demo_guest_session';
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(() => {
+    // Attempt instant rehydration from local storage to avoid flash on reload
+    try {
+      const savedGuest = localStorage.getItem(DEMO_GUEST_KEY);
+      if (savedGuest) return JSON.parse(savedGuest);
+      const lastUid = localStorage.getItem('connexa_last_uid');
+      if (lastUid) {
+        const localAccounts = getLocalRegisteredAccounts();
+        const found = localAccounts.find(a => a.uid === lastUid);
+        if (found) return found;
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  });
   const [loading, setLoading] = useState<boolean>(true);
 
   const fetchProfile = async (uid: string) => {
     const prof = await getUserProfile(uid);
-    if (prof) setUserProfile(prof);
+    if (prof) {
+      setUserProfile(prof);
+      saveLocalRegisteredAccount(prof);
+    }
     return prof;
   };
 
+  // Auth State Listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         localStorage.removeItem(DEMO_GUEST_KEY);
+        localStorage.setItem('connexa_last_uid', user.uid);
         setCurrentUser(user);
+
+        // Immediate local cache lookup so bio/photo are restored instantly on refresh
+        const localAccounts = getLocalRegisteredAccounts();
+        const cached = localAccounts.find(a => a.uid === user.uid);
+        if (cached) {
+          setUserProfile(cached);
+        }
+
         try {
           let prof = await getUserProfile(user.uid);
           if (!prof) {
-            prof = await createUserProfile(user.uid, user.email || '', user.displayName || 'Connexa User', `user_${user.uid.slice(0, 5)}`);
+            prof = await createUserProfile(
+              user.uid, 
+              user.email || '', 
+              user.displayName || cached?.displayName || 'Connexa User', 
+              cached?.username || `user_${user.uid.slice(0, 5)}`,
+              cached?.photoURL || user.photoURL || undefined,
+              cached?.bio || undefined
+            );
           }
-          setUserProfile(prof);
+          if (prof) {
+            setUserProfile(prof);
+            saveLocalRegisteredAccount(prof);
+          }
         } catch (err) {
           console.warn('Error fetching user profile on auth state change:', err);
-          setUserProfile({
-            uid: user.uid,
-            email: user.email || '',
-            displayName: user.displayName || 'Connexa User',
-            username: `user_${user.uid.slice(0, 5)}`,
-            userTag: '#1000',
-            photoURL: user.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
-            bio: 'Hey there! I am using Connexa to stay connected.',
-            status: 'online',
-            lastSeen: serverTimestamp(),
-            createdAt: serverTimestamp()
-          });
+          if (!cached) {
+            const fallback: UserProfile = {
+              uid: user.uid,
+              email: user.email || '',
+              displayName: user.displayName || 'Connexa User',
+              username: `user_${user.uid.slice(0, 5)}`,
+              userTag: '#1000',
+              photoURL: user.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
+              bio: 'Hey there! I am using Connexa to stay connected.',
+              status: 'online',
+              lastSeen: serverTimestamp(),
+              createdAt: serverTimestamp()
+            };
+            setUserProfile(fallback);
+            saveLocalRegisteredAccount(fallback);
+          }
         }
       } else {
         // Check for local demo guest session
@@ -73,6 +127,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const guestProf = JSON.parse(savedGuest) as UserProfile;
             setCurrentUser({ uid: guestProf.uid, isAnonymous: true } as User);
             setUserProfile(guestProf);
+            saveLocalRegisteredAccount(guestProf);
           } catch {
             localStorage.removeItem(DEMO_GUEST_KEY);
             setCurrentUser(null);
@@ -88,6 +143,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => unsubscribe();
   }, []);
+
+  // Real-time listener for current user's profile document in Firestore
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+
+    const uid = currentUser.uid;
+    const unsubProfile = subscribeToUserProfile(uid, (liveProfile) => {
+      if (liveProfile) {
+        setUserProfile(liveProfile);
+        saveLocalRegisteredAccount(liveProfile);
+        if (localStorage.getItem(DEMO_GUEST_KEY)) {
+          localStorage.setItem(DEMO_GUEST_KEY, JSON.stringify(liveProfile));
+        }
+      }
+    });
+
+    return () => unsubProfile();
+  }, [currentUser?.uid]);
 
   // Periodically update user's lastSeen timestamp in Firestore while active
   useEffect(() => {
@@ -309,14 +382,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const updateProfile = async (updates: Partial<UserProfile>) => {
-    if (currentUser && userProfile) {
-      try {
-        await updateUserProfile(currentUser.uid, updates);
-      } catch (err) {
-        console.warn('Cloud update profile skipped:', err);
-      }
-      const updated = { ...userProfile, ...updates };
+    if (currentUser) {
+      // 1. Persist to Firestore and local accounts storage
+      const savedProfile = await updateUserProfile(currentUser.uid, updates);
+      
+      const updated = savedProfile || { ...userProfile, ...updates, uid: currentUser.uid } as UserProfile;
       setUserProfile(updated);
+      saveLocalRegisteredAccount(updated);
+
+      // 2. Also update Firebase Auth profile metadata if user is standard email/password user
+      if (currentUser && !currentUser.isAnonymous) {
+        try {
+          const authUpdates: { displayName?: string; photoURL?: string } = {};
+          if (updates.displayName) authUpdates.displayName = updates.displayName;
+          if (updates.photoURL) authUpdates.photoURL = updates.photoURL;
+          if (Object.keys(authUpdates).length > 0) {
+            await updateAuthProfile(currentUser, authUpdates);
+          }
+        } catch (authProfErr) {
+          console.warn('Firebase Auth updateProfile skipped:', authProfErr);
+        }
+      }
+
+      // 3. Persist demo guest session in localStorage if active
       if (localStorage.getItem(DEMO_GUEST_KEY)) {
         localStorage.setItem(DEMO_GUEST_KEY, JSON.stringify(updated));
       }

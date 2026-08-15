@@ -84,14 +84,28 @@ export const findAccountByEmail = async (email: string): Promise<UserProfile | n
 };
 
 export const getUserProfile = async (uid: string): Promise<UserProfile | null> => {
-  // Check local first if offline
+  if (!uid) return null;
+
+  // Check local first
   const localAccounts = getLocalRegisteredAccounts();
   const localMatch = localAccounts.find(a => a.uid === uid);
 
   try {
-    const userDoc = await withTimeout(getDoc(doc(db, 'users', uid)), 3000, 'Fetch profile timeout');
+    const userDoc = await withTimeout(getDoc(doc(db, 'users', uid)), 3500, 'Fetch profile timeout');
     if (userDoc.exists()) {
-      const prof = userDoc.data() as UserProfile;
+      const data = userDoc.data();
+      const prof: UserProfile = {
+        uid,
+        email: data.email || localMatch?.email || '',
+        displayName: data.displayName || localMatch?.displayName || 'Connexa User',
+        username: data.username || localMatch?.username || `user_${uid.slice(0, 5)}`,
+        userTag: data.userTag || localMatch?.userTag || '#1000',
+        photoURL: data.photoURL || localMatch?.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+        bio: data.bio !== undefined ? data.bio : (localMatch?.bio || ''),
+        status: data.status || 'online',
+        lastSeen: data.lastSeen || serverTimestamp(),
+        createdAt: data.createdAt || serverTimestamp()
+      };
       saveLocalRegisteredAccount(prof);
       return prof;
     }
@@ -125,11 +139,13 @@ export const createUserProfile = async (
   email: string, 
   displayName: string, 
   rawUsername: string,
-  photoURL?: string
+  photoURL?: string,
+  bio?: string
 ): Promise<UserProfile> => {
   const cleanUsername = rawUsername.toLowerCase().trim().replace(/[^a-z0-9_]/g, '') || `user_${uid.slice(0, 6)}`;
   const userTag = generateUserTag();
   const defaultPhoto = photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`;
+  const defaultBio = bio !== undefined ? bio : 'Hey there! I am using Connexa to stay connected.';
 
   const profile: UserProfile = {
     uid,
@@ -138,7 +154,7 @@ export const createUserProfile = async (
     username: cleanUsername,
     userTag,
     photoURL: defaultPhoto,
-    bio: 'Hey there! I am using Connexa to stay connected.',
+    bio: defaultBio,
     status: 'online',
     lastSeen: serverTimestamp(),
     createdAt: serverTimestamp()
@@ -148,9 +164,9 @@ export const createUserProfile = async (
   saveLocalRegisteredAccount(profile);
 
   try {
-    await setDoc(doc(db, 'users', uid), profile);
+    await setDoc(doc(db, 'users', uid), profile, { merge: true });
     // Reserve username mapping
-    await setDoc(doc(db, 'usernames', cleanUsername), { uid });
+    await setDoc(doc(db, 'usernames', cleanUsername), { uid }, { merge: true });
   } catch (err) {
     console.warn('Could not persist profile to Firestore, saved locally:', err);
   }
@@ -161,16 +177,51 @@ export const createUserProfile = async (
 export const updateUserProfile = async (
   uid: string, 
   updates: Partial<UserProfile>
-): Promise<void> => {
-  const ref = doc(db, 'users', uid);
+): Promise<UserProfile | null> => {
+  if (!uid) return null;
+
+  // 1. Immediately update local storage so refresh or offline mode has the updated bio & photo
+  const localAccounts = getLocalRegisteredAccounts();
+  const existingIdx = localAccounts.findIndex(a => a.uid === uid);
+  let updatedProf: UserProfile;
+
+  if (existingIdx >= 0) {
+    updatedProf = {
+      ...localAccounts[existingIdx],
+      ...updates,
+      uid
+    };
+    localAccounts[existingIdx] = updatedProf;
+  } else {
+    updatedProf = {
+      uid,
+      displayName: updates.displayName || 'Connexa User',
+      username: updates.username || `user_${uid.slice(0, 5)}`,
+      userTag: updates.userTag || '#1000',
+      email: updates.email || '',
+      photoURL: updates.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${uid}`,
+      bio: updates.bio || '',
+      status: updates.status || 'online',
+      lastSeen: serverTimestamp(),
+      createdAt: serverTimestamp(),
+      ...updates
+    };
+    localAccounts.push(updatedProf);
+  }
+  saveLocalRegisteredAccount(updatedProf);
+
+  // 2. Persist to Firestore with merge: true (handles existing or newly created documents safely)
   try {
-    await updateDoc(ref, {
+    const ref = doc(db, 'users', uid);
+    await setDoc(ref, {
       ...updates,
       lastSeen: serverTimestamp()
-    });
+    }, { merge: true });
   } catch (e) {
     console.warn('Firestore update profile warning:', e);
   }
+
+  return updatedProf;
 };
 
 export const updateUserPresence = async (uid: string, status: 'online' | 'offline' = 'online'): Promise<void> => {
