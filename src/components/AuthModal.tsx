@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { MessageSquare, AtSign, User, Mail, Lock, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { AtSign, User, Mail, Lock, ArrowRight, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AvatarPicker } from './AvatarPicker';
 import { checkUsernameAvailable } from '../services/userService';
+import { ConnexaLogo } from './ConnexaLogo';
 
 export const AuthModal: React.FC = () => {
   const { loginWithEmail, registerWithEmail } = useAuth();
@@ -82,10 +83,8 @@ export const AuthModal: React.FC = () => {
         
         {/* Header Branding */}
         <div className="p-8 pb-6 bg-linear-to-br from-blue-600 via-blue-700 to-slate-900 text-white relative">
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-white/10 rounded-2xl backdrop-blur-md border border-white/20">
-              <MessageSquare className="w-7 h-7 text-blue-200" />
-            </div>
+          <div className="flex items-center gap-3.5">
+            <ConnexaLogo size={48} className="ring-4 ring-white/20 rounded-2xl shadow-lg" />
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Connexa</h1>
               <p className="text-xs text-blue-200 font-medium">Connect naturally with real friends</p>

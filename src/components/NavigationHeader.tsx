@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
-import { MessageSquare, LogOut, Settings, UserCheck, Search, Users, Sparkles, Moon, Sun } from 'lucide-react';
+import { MessageSquare, LogOut, Settings, Search, Users, Moon, Sun, Bell, Volume2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { ProfileEditModal } from './ProfileEditModal';
+import { testNotification } from '../services/notificationService';
+import { ConnexaLogo } from './ConnexaLogo';
 
 interface NavigationHeaderProps {
   activeTab: 'chats' | 'search' | 'requests';
@@ -17,10 +19,17 @@ export const NavigationHeader: React.FC<NavigationHeaderProps> = ({
   const { userProfile, logout } = useAuth();
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [justTested, setJustTested] = useState(false);
 
   const toggleDarkMode = () => {
     setDarkMode(!darkMode);
     document.documentElement.classList.toggle('dark');
+  };
+
+  const handleTestNotifications = async () => {
+    setJustTested(true);
+    await testNotification();
+    setTimeout(() => setJustTested(false), 2500);
   };
 
   return (
@@ -29,9 +38,7 @@ export const NavigationHeader: React.FC<NavigationHeaderProps> = ({
         
         {/* Left Branding */}
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-blue-600 rounded-xl text-white shadow-md shadow-blue-600/20">
-            <MessageSquare className="w-5 h-5" />
-          </div>
+          <ConnexaLogo size={38} className="hover:scale-105 transition-transform" />
           <div>
             <h1 className="text-lg font-bold text-slate-900 dark:text-white tracking-tight leading-none">
               Connexa
@@ -89,6 +96,19 @@ export const NavigationHeader: React.FC<NavigationHeaderProps> = ({
         {/* Right User Profile Pill & Controls */}
         <div className="flex items-center gap-2">
           
+          {/* Notification Quick Test Button */}
+          <button
+            onClick={handleTestNotifications}
+            className={`p-2 rounded-xl transition-all ${
+              justTested 
+                ? 'bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400 ring-2 ring-blue-500/30' 
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+            title="Test Real-Time Alert & Chime"
+          >
+            {justTested ? <Volume2 className="w-4 h-4 text-blue-500 animate-pulse" /> : <Bell className="w-4 h-4" />}
+          </button>
+
           {/* Dark Mode Toggle */}
           <button
             onClick={toggleDarkMode}

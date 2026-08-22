@@ -8,6 +8,8 @@ interface EnlargeableAvatarProps {
   src: string;
   alt: string;
   name?: string;
+  uid?: string;
+  username?: string;
   userProfile?: UserProfile;
   subtitle?: string;
   bio?: string;
@@ -26,6 +28,8 @@ export const EnlargeableAvatar: React.FC<EnlargeableAvatarProps> = ({
   src,
   alt,
   name,
+  uid,
+  username,
   userProfile,
   subtitle,
   bio,
@@ -51,7 +55,8 @@ export const EnlargeableAvatar: React.FC<EnlargeableAvatarProps> = ({
       openAvatarPreview({
         photoURL: src,
         name: name || userProfile?.displayName || alt,
-        subtitle: subtitle || (userProfile ? `@${userProfile.username}${userProfile.userTag || ''}` : undefined),
+        uid: uid || userProfile?.uid,
+        subtitle: subtitle || (userProfile ? `@${userProfile.username}${userProfile.userTag || ''}` : (username ? `@${username}` : undefined)),
         bio: bio || userProfile?.bio,
         userProfile: userProfile,
         isGroup: isGroup,
@@ -67,6 +72,7 @@ export const EnlargeableAvatar: React.FC<EnlargeableAvatarProps> = ({
   return (
     <div
       onClick={handleClick}
+      onContextMenu={(e) => e.preventDefault()}
       className={`relative shrink-0 select-none ${enableEnlarge ? 'cursor-pointer group/avatar' : ''} ${className}`}
       title={enableEnlarge ? `Click to view ${name || alt}'s enlarged photo` : alt}
     >
@@ -74,7 +80,10 @@ export const EnlargeableAvatar: React.FC<EnlargeableAvatarProps> = ({
         <img
           src={src}
           alt={alt}
-          className="w-full h-full object-cover transition-transform duration-200"
+          draggable={false}
+          onContextMenu={(e) => e.preventDefault()}
+          onDragStart={(e) => e.preventDefault()}
+          className="w-full h-full object-cover transition-transform duration-200 pointer-events-none select-none"
           onError={(e) => {
             // Fallback to DiceBear if image URL is broken
             (e.target as HTMLImageElement).src = `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(alt || 'user')}`;

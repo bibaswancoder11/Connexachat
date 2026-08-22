@@ -1,0 +1,23 @@
+{
+  "name": "Connexa Messenger",
+  "short_name": "Connexa",
+  "description": "Real-time chat application with high-resolution avatars, unique user handles, instant push & sound alerts, and direct messaging.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0F172A",
+  "theme_color": "#2563EB",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "logo.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "favicon.svg",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/svg+xml"
+    }
+  ]
+}

@@ -456,7 +456,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                       src={senderAvatar}
                       alt={senderDisplayName}
                       name={senderDisplayName}
-                      userProfile={isGroup ? senderProfile : otherUser}
+                      uid={msg.senderId}
+                      userProfile={isGroup ? (senderProfile || undefined) : otherUser}
                       sizeClass="w-8 h-8 rounded-xl"
                       className="shrink-0 mb-1"
                     />

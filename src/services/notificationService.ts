@@ -131,7 +131,7 @@ export const sendWebNotification = (
 // Pure synthetic Web Audio API chime sound generator (no external files needed)
 let audioCtx: AudioContext | null = null;
 
-export const playNotificationSound = (type: 'message' | 'request' | 'group' = 'message') => {
+export const playNotificationSound = (type: 'message' | 'request' | 'group' | 'accepted' = 'message') => {
   if (typeof window === 'undefined') return;
 
   try {
@@ -181,6 +181,22 @@ export const playNotificationSound = (type: 'message' | 'request' | 'group' = 'm
       gain.connect(audioCtx.destination);
       osc.start(now);
       osc.stop(now + 0.45);
+    } else if (type === 'accepted') {
+      // Joyful celebratory harmonic arpeggio (C5 -> E5 -> G5 -> C6)
+      [523.25, 659.25, 783.99, 1046.50].forEach((freq, idx) => {
+        const osc = audioCtx!.createOscillator();
+        const gain = audioCtx!.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+
+        gain.gain.setValueAtTime(0.14, now + idx * 0.08);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.08 + 0.35);
+
+        osc.connect(gain);
+        gain.connect(audioCtx!.destination);
+        osc.start(now + idx * 0.08);
+        osc.stop(now + idx * 0.08 + 0.35);
+      });
     } else if (type === 'group') {
       // Multi-harmony chord for group activity
       [523.25, 659.25, 783.99].forEach((freq, idx) => {
@@ -207,9 +223,9 @@ export const playNotificationChime = playNotificationSound;
 
 export const testNotification = async () => {
   const perm = await requestNotificationPermission();
-  playNotificationSound('message');
+  playNotificationSound('accepted');
   if (perm === 'granted') {
-    showWebNotification('Connexa Test Notification 🔔', {
+    showWebNotification('Connexa Real-Time Alerts 🔔', {
       body: 'Real-time background & sound notifications are active on this device!',
       icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa-test'
     });

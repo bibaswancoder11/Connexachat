@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <linearGradient id="connexaBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="40%" stop-color="#2563EB" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#1E3A8A" flood-opacity="0.25" />
+    </filter>
+  </defs>
+
+  <!-- Background Squircle / Rounded Shape -->
+  <rect 
+    x="16" 
+    y="16" 
+    width="480" 
+    height="480" 
+    rx="140" 
+    ry="140" 
+    fill="url(#connexaBg)" 
+  />
+
+  <!-- Speech Bubble Icon matching Connexa logo -->
+  <path
+    d="M176 156 
+       H336 
+       C358.09 156 376 173.91 376 196 
+       V300 
+       C376 322.09 358.09 340 336 340 
+       H212 
+       L162 376 
+       C156.4 380 148 376 148 369 
+       V196 
+       C148 173.91 165.91 156 188 156 Z"
+    fill="none"
+    stroke="#FFFFFF"
+    stroke-width="26"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

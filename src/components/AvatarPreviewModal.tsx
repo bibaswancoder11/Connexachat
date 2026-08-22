@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { X, Download, ZoomIn, ZoomOut, User, Users, ShieldCheck, Clock, ExternalLink } from 'lucide-react';
+import { X, Download, ZoomIn, ZoomOut, User, Users, ShieldCheck, Lock } from 'lucide-react';
 import { UserProfile } from '../types';
+import { useAuth } from '../context/AuthContext';
 import { isUserOnline, formatLastSeen } from '../services/userService';
 import { downloadImageDataUrl } from '../utils/imageUtils';
 
 export interface AvatarPreviewData {
   photoURL: string;
   name: string;
+  uid?: string;
   subtitle?: string;
   bio?: string;
   userProfile?: UserProfile;
@@ -25,6 +27,7 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
   onClose,
   onOpenDirectChat
 }) => {
+  const { currentUser } = useAuth();
   const [zoom, setZoom] = useState(1);
 
   // Reset zoom whenever image changes
@@ -48,9 +51,18 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
   if (!data) return null;
 
   const online = data.userProfile ? isUserOnline(data.userProfile) : false;
-  const lastSeenText = data.userProfile ? formatLastSeen(data.userProfile.lastSeen) : '';
+  const lastSeenText = data.userProfile ? formatLastSeen(data.userProfile) : '';
+
+  // Determine if the viewed avatar is the current user's own profile photo
+  const isOwnProfile = Boolean(
+    currentUser && (
+      (data.userProfile && data.userProfile.uid === currentUser.uid) ||
+      (data.uid && data.uid === currentUser.uid)
+    )
+  );
 
   const handleDownload = () => {
+    if (!isOwnProfile) return; // Strict safeguard: Only allow downloading your own profile photo
     const filename = `${data.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_avatar.png`;
     downloadImageDataUrl(data.photoURL, filename);
   };
@@ -59,6 +71,7 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
     <div
       className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 sm:p-6 animate-in fade-in duration-200 select-none"
       onClick={onClose}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {/* Top Controls Bar */}
       <div
@@ -101,15 +114,26 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
             <ZoomIn className="w-4 h-4" />
           </button>
 
-          <button
-            type="button"
-            onClick={handleDownload}
-            className="p-2 text-blue-400 hover:text-blue-300 rounded-xl hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold"
-            title="Download Avatar"
-          >
-            <Download className="w-4 h-4" />
-            <span className="hidden sm:inline">Save</span>
-          </button>
+          {/* Download button only allowed for the user's own profile photo */}
+          {isOwnProfile ? (
+            <button
+              type="button"
+              onClick={handleDownload}
+              className="p-2 text-blue-400 hover:text-blue-300 rounded-xl hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold"
+              title="Download Your Profile Photo"
+            >
+              <Download className="w-4 h-4" />
+              <span className="hidden sm:inline">Save</span>
+            </button>
+          ) : (
+            <div
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white/5 border border-white/10 text-slate-300 text-xs font-medium cursor-help"
+              title="Profile photo is protected. Downloads and saving of other users' photos are disabled for privacy."
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Protected</span>
+            </div>
+          )}
 
           <button
             type="button"
@@ -126,21 +150,36 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
       <div
         className="flex-1 flex flex-col items-center justify-center overflow-auto p-4 my-auto cursor-default"
         onClick={onClose}
+        onContextMenu={(e) => e.preventDefault()}
       >
         <div
           className="relative max-w-sm sm:max-w-md w-full flex flex-col items-center"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Avatar Container with glowing border and shadow */}
-          <div className="relative group">
-            <div className="w-64 h-64 sm:w-80 sm:h-80 rounded-3xl overflow-hidden bg-slate-900 border-4 border-slate-700/80 shadow-2xl ring-4 ring-blue-500/20 flex items-center justify-center">
+          <div className="relative group select-none">
+            <div
+              className="w-64 h-64 sm:w-80 sm:h-80 rounded-3xl overflow-hidden bg-slate-900 border-4 border-slate-700/80 shadow-2xl ring-4 ring-blue-500/20 flex items-center justify-center relative"
+              onContextMenu={(e) => e.preventDefault()}
+            >
               <img
                 src={data.photoURL}
                 alt={data.name}
+                draggable={false}
+                onContextMenu={(e) => e.preventDefault()}
+                onDragStart={(e) => e.preventDefault()}
                 style={{ transform: `scale(${zoom})` }}
-                className="w-full h-full object-cover transition-transform duration-200 cursor-zoom-in"
+                className="w-full h-full object-cover transition-transform duration-200 cursor-zoom-in pointer-events-auto select-none"
                 onDoubleClick={() => setZoom(z => z === 1 ? 1.75 : 1)}
               />
+
+              {/* Privacy Badge overlay for other users */}
+              {!isOwnProfile && (
+                <div className="absolute top-3 left-3 px-2.5 py-1 bg-black/60 backdrop-blur-md rounded-lg text-[10px] text-slate-300 flex items-center gap-1.5 pointer-events-none border border-white/10 shadow-sm">
+                  <Lock className="w-3 h-3 text-emerald-400" />
+                  <span className="font-medium tracking-wide">Privacy Protected</span>
+                </div>
+              )}
             </div>
 
             {/* Status indicator badge */}
@@ -213,10 +252,15 @@ export const AvatarPreviewModal: React.FC<AvatarPreviewModalProps> = ({
 
         {/* Action Row */}
         <div className="flex items-center justify-between pt-1">
-          <p className="text-[11px] text-slate-400">
-            Double-click photo to toggle zoom • Click outside or press Esc to close
+          <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+            {!isOwnProfile && <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+            <span>
+              {!isOwnProfile
+                ? 'Profile picture protected • Downloads & saving are restricted for user privacy'
+                : 'Double-click photo to toggle zoom • Click outside or press Esc to close'}
+            </span>
           </p>
-          {data.userProfile && onOpenDirectChat && (
+          {data.userProfile && onOpenDirectChat && !isOwnProfile && (
             <button
               type="button"
               onClick={() => {

@@ -14,6 +14,7 @@ import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
 import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
+import { ConnexaLogo } from './components/ConnexaLogo';
 
 const ConnexaApp: React.FC = () => {
   const { currentUser, userProfile, loading } = useAuth();
@@ -29,10 +30,14 @@ const ConnexaApp: React.FC = () => {
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
-  // Keep track of previous chat messages & request counts to trigger notifications
-  const prevChatsRef = useRef<ChatRoom[]>([]);
-  const prevRequestsCountRef = useRef<number>(0);
-  const isFirstLoadRef = useRef<boolean>(true);
+  // Keep track of previous states and notified IDs to trigger notifications reliably without duplicates
+  const prevChatsMapRef = useRef<Map<string, ChatRoom>>(new Map());
+  const isFirstChatsLoadRef = useRef<boolean>(true);
+  const notifiedMessageKeysRef = useRef<Set<string>>(new Set());
+
+  const knownOutgoingUidsRef = useRef<Set<string>>(new Set());
+  const knownFriendUidsRef = useRef<Set<string> | null>(null);
+  const knownIncomingReqIdsRef = useRef<Set<string> | null>(null);
 
   // Ask for Push Notification permission & register Service Worker on load
   useEffect(() => {
@@ -43,6 +48,26 @@ const ConnexaApp: React.FC = () => {
         localStorage.setItem('connexa_last_uid', currentUser.uid);
       } catch (e) {
         // ignore
+      }
+
+      // Handle notification clicks forwarded from Service Worker
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+        const handleSwMessage = (event: MessageEvent) => {
+          if (event.data?.type === 'NOTIFICATION_CLICK') {
+            const payload = event.data.payload;
+            if (payload?.chatId) {
+              setActiveChatId(payload.chatId);
+              setActiveTab('chats');
+            } else if (payload?.tab) {
+              setActiveTab(payload.tab);
+            }
+          }
+        };
+
+        navigator.serviceWorker.addEventListener('message', handleSwMessage);
+        return () => {
+          navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+        };
       }
     }
   }, [currentUser]);
@@ -72,101 +97,175 @@ const ConnexaApp: React.FC = () => {
   useEffect(() => {
     if (!currentUser || !userProfile) return;
 
-    // Real-time chats subscription
+    // 1. Real-time chats subscription & new incoming message notifications
     const unsubscribeChats = subscribeToUserChats(currentUser.uid, (chatList) => {
-      // Check for new messages to trigger push & in-app toast notification
-      if (!isFirstLoadRef.current) {
+      if (isFirstChatsLoadRef.current) {
+        // Seed initial chat state without triggering stale notifications on first load
         chatList.forEach((chat) => {
-          const prevChat = prevChatsRef.current.find(c => c.id === chat.id);
+          prevChatsMapRef.current.set(chat.id, chat);
+          if (chat.lastMessageSenderId && chat.lastMessage) {
+            const timeVal = chat.lastMessageTime?.toMillis ? chat.lastMessageTime.toMillis() : (chat.lastMessageTime?.seconds ? chat.lastMessageTime.seconds * 1000 : 0);
+            notifiedMessageKeysRef.current.add(`${chat.id}_${chat.lastMessageSenderId}_${timeVal}_${chat.lastMessage}`);
+          }
+        });
+        isFirstChatsLoadRef.current = false;
+      } else {
+        // Check for new messages arriving in real time
+        chatList.forEach((chat) => {
+          const prevChat = prevChatsMapRef.current.get(chat.id);
           const unread = chat.unreadCounts?.[currentUser.uid] || 0;
           const prevUnread = prevChat?.unreadCounts?.[currentUser.uid] || 0;
 
-          if (unread > prevUnread && chat.lastMessageSenderId !== currentUser.uid) {
-            const senderName = chat.isGroup 
-              ? (chat.groupName || 'Group Chat') 
-              : (chat.otherUser?.displayName || 'Friend');
+          const hasLastMessage = Boolean(chat.lastMessage && chat.lastMessageSenderId);
+          const isFromOtherUser = chat.lastMessageSenderId !== currentUser.uid;
 
-            const avatar = chat.isGroup ? chat.groupAvatar : chat.otherUser?.photoURL;
-            const notifTitle = chat.isGroup ? `Message in ${chat.groupName}` : `Message from ${senderName}`;
-            const notifBody = chat.lastMessage || 'Sent a new message';
+          if (hasLastMessage && isFromOtherUser) {
+            const timeVal = chat.lastMessageTime?.toMillis 
+              ? chat.lastMessageTime.toMillis() 
+              : (chat.lastMessageTime?.seconds 
+                  ? chat.lastMessageTime.seconds * 1000 
+                  : (chat.updatedAt?.toMillis ? chat.updatedAt.toMillis() : Date.now()));
 
-            // Send System Web / Service Worker Notification
-            sendWebNotification(notifTitle, notifBody, avatar, () => {
-              setActiveChatId(chat.id);
-              setActiveTab('chats');
-            });
+            const msgKey = `${chat.id}_${chat.lastMessageSenderId}_${timeVal}_${chat.lastMessage}`;
 
-            // Play audio chime
-            playNotificationChime(chat.isGroup ? 'group' : 'message');
+            const isNewContent = !prevChat || prevChat.lastMessage !== chat.lastMessage || unread > prevUnread || prevChat.lastMessageSenderId !== chat.lastMessageSenderId;
 
-            // Trigger floating In-App Toast
-            setToastNotification({
-              id: `${chat.id}_${Date.now()}`,
-              type: 'message',
-              title: notifTitle,
-              body: notifBody,
-              avatar: avatar,
-              chatId: chat.id,
-              onAction: () => {
-                setActiveChatId(chat.id);
-                setActiveTab('chats');
+            if (isNewContent && !notifiedMessageKeysRef.current.has(msgKey)) {
+              notifiedMessageKeysRef.current.add(msgKey);
+
+              // Check if user is currently looking at this active chat with window in focus
+              const isViewingActiveChat = activeChatId === chat.id && activeTab === 'chats' && typeof document !== 'undefined' && !document.hidden;
+
+              if (!isViewingActiveChat) {
+                const senderName = chat.isGroup 
+                  ? (chat.groupName || 'Group Chat') 
+                  : (chat.otherUser?.displayName || 'Friend');
+
+                const avatar = chat.isGroup ? chat.groupAvatar : chat.otherUser?.photoURL;
+                const notifTitle = chat.isGroup ? `💬 ${chat.groupName}` : `💬 ${senderName}`;
+                const notifBody = chat.lastMessage || 'Sent a new message';
+
+                // Send System Web / Service Worker Notification
+                sendWebNotification(notifTitle, notifBody, avatar, () => {
+                  setActiveChatId(chat.id);
+                  setActiveTab('chats');
+                });
+
+                // Play audio chime
+                playNotificationChime(chat.isGroup ? 'group' : 'message');
+
+                // Trigger floating In-App Toast
+                setToastNotification({
+                  id: `${chat.id}_${Date.now()}`,
+                  type: 'message',
+                  title: notifTitle,
+                  body: notifBody,
+                  avatar: avatar,
+                  chatId: chat.id,
+                  actionLabel: 'Open Chat',
+                  onAction: () => {
+                    setActiveChatId(chat.id);
+                    setActiveTab('chats');
+                  }
+                });
               }
-            });
+            }
           }
+
+          prevChatsMapRef.current.set(chat.id, chat);
         });
       }
 
-      prevChatsRef.current = chatList;
       setChats(chatList);
 
-      if (!activeChatId && chatList.length > 0) {
+      if (!activeChatId && chatList.length > 0 && typeof window !== 'undefined' && window.innerWidth >= 768) {
         setActiveChatId(chatList[0].id);
       }
-
-      isFirstLoadRef.current = false;
     });
 
-    // Incoming friend requests subscription
+    // 2. Incoming friend requests subscription
     const unsubscribeIncoming = subscribeToIncomingRequests(currentUser.uid, (requests) => {
       const pendingReqs = requests.filter(r => r.status === 'pending');
-      
-      if (!isFirstLoadRef.current && pendingReqs.length > prevRequestsCountRef.current) {
-        const latest = pendingReqs[0];
-        const reqTitle = 'New Friend Request 🤝';
-        const reqBody = `${latest.fromDisplayName || 'Someone'} sent you a friend request on Connexa!`;
+      const currentReqIds = new Set(pendingReqs.map(r => r.id));
 
-        // Send System Web / Service Worker Notification
-        sendWebNotification(reqTitle, reqBody, latest.fromPhotoURL, () => {
-          setActiveTab('requests');
-        });
+      if (knownIncomingReqIdsRef.current !== null) {
+        // Find newly arrived incoming requests
+        const newlyArrived = pendingReqs.filter(r => !knownIncomingReqIdsRef.current?.has(r.id));
+        if (newlyArrived.length > 0) {
+          const latest = newlyArrived[0];
+          const reqTitle = 'New Friend Request 🤝';
+          const reqBody = `${latest.fromDisplayName || 'Someone'} sent you a friend request on Connexa!`;
 
-        // Play audio chime
-        playNotificationChime('request');
-
-        // Trigger floating In-App Toast
-        setToastNotification({
-          id: `req_${Date.now()}`,
-          type: 'request',
-          title: reqTitle,
-          body: reqBody,
-          avatar: latest.fromPhotoURL,
-          onAction: () => {
+          // Send System Web / Service Worker Notification
+          sendWebNotification(reqTitle, reqBody, latest.fromPhotoURL, () => {
             setActiveTab('requests');
-          }
-        });
+          });
+
+          // Play audio chime
+          playNotificationChime('request');
+
+          // Trigger floating In-App Toast
+          setToastNotification({
+            id: `req_${latest.id}_${Date.now()}`,
+            type: 'request',
+            title: reqTitle,
+            body: reqBody,
+            avatar: latest.fromPhotoURL,
+            actionLabel: 'View Requests',
+            onAction: () => {
+              setActiveTab('requests');
+            }
+          });
+        }
       }
 
-      prevRequestsCountRef.current = pendingReqs.length;
+      knownIncomingReqIdsRef.current = currentReqIds;
       setIncomingRequests(pendingReqs);
     });
 
-    // Outgoing friend requests subscription
+    // 3. Outgoing friend requests subscription
     const unsubscribeOutgoing = subscribeToOutgoingRequests(currentUser.uid, (requests) => {
-      setOutgoingRequests(requests.filter(r => r.status === 'pending'));
+      const pending = requests.filter(r => r.status === 'pending');
+      knownOutgoingUidsRef.current = new Set(pending.map(r => r.toUid));
+      setOutgoingRequests(pending);
     });
 
-    // Friends list subscription
+    // 4. Friends list subscription & Friend Request Acceptance notifications
     const unsubscribeFriendsList = subscribeToFriends(currentUser.uid, (friendProfiles) => {
+      const currentFriendUids = new Set(friendProfiles.map(p => p.uid));
+
+      if (knownFriendUidsRef.current !== null) {
+        // Detect newly added friends (e.g. someone accepted a friend request I sent)
+        const newlyAddedFriends = friendProfiles.filter(p => !knownFriendUidsRef.current?.has(p.uid));
+
+        newlyAddedFriends.forEach((newFriend) => {
+          const notifTitle = 'Friend Request Accepted! 🎉';
+          const notifBody = `${newFriend.displayName} (@${newFriend.username}) accepted your friend request! You can now start chatting.`;
+
+          // Send System Web / Service Worker Notification
+          sendWebNotification(notifTitle, notifBody, newFriend.photoURL, () => {
+            handleDirectChat(newFriend.uid);
+          });
+
+          // Play celebratory sound chime
+          playNotificationChime('accepted');
+
+          // Trigger floating In-App Toast
+          setToastNotification({
+            id: `accepted_${newFriend.uid}_${Date.now()}`,
+            type: 'friend_accepted',
+            title: notifTitle,
+            body: `${newFriend.displayName} accepted your friend request!`,
+            avatar: newFriend.photoURL,
+            actionLabel: 'Start Chatting',
+            onAction: () => {
+              handleDirectChat(newFriend.uid);
+            }
+          });
+        });
+      }
+
+      knownFriendUidsRef.current = currentFriendUids;
       setFriends(friendProfiles);
     });
 
@@ -176,13 +275,13 @@ const ConnexaApp: React.FC = () => {
       unsubscribeOutgoing();
       unsubscribeFriendsList();
     };
-  }, [currentUser, userProfile]);
+  }, [currentUser, userProfile, activeChatId, activeTab]);
 
   if (loading) {
     return (
       <div className="min-h-screen w-full bg-slate-900 flex flex-col items-center justify-center p-4 text-white">
-        <div className="p-4 bg-blue-600/20 rounded-3xl border border-blue-500/30 mb-4 animate-bounce">
-          <MessageSquare className="w-10 h-10 text-blue-400" />
+        <div className="mb-4 animate-bounce">
+          <ConnexaLogo size={64} className="ring-4 ring-blue-500/20 rounded-2xl shadow-xl" />
         </div>
         <h2 className="text-xl font-bold tracking-tight">Connexa</h2>
         <p className="text-xs text-slate-400 mt-1">Initializing secure messenger...</p>

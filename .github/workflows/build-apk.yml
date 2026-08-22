@@ -1,0 +1,155 @@
+name: Build Android APK (Connexa)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: 'App Version Name (e.g. 1.0.0)'
+        required: true
+        default: '1.0.0'
+      version_code:
+        description: 'App Version Code (integer, e.g. 1)'
+        required: true
+        default: '1'
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'debug'
+        type: choice
+        options:
+          - debug
+          - release
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set Up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set Up Java 17 (JDK)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set Up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Web Dependencies
+        run: |
+          npm ci || npm install
+          npm install --save @capacitor/core @capacitor/cli @capacitor/android
+
+      - name: Build Web Application (Vite)
+        run: |
+          npm run build
+
+      - name: Initialize & Sync Capacitor Android
+        run: |
+          npx cap add android || true
+          npx cap sync android
+
+      - name: Configure App Version & Permissions
+        run: |
+          VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
+          VERSION_CODE="${{ github.event.inputs.version_code || '1' }}"
+          echo "Building Connexa version: $VERSION_NAME (Code: $VERSION_CODE)"
+
+          # Update version in build.gradle
+          if [ -f "android/app/build.gradle" ]; then
+            sed -i "s/versionCode 1/versionCode $VERSION_CODE/g" android/app/build.gradle || true
+            sed -i "s/versionName \"1.0\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle || true
+          fi
+
+          # Ensure Internet & Network Permissions in AndroidManifest.xml
+          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_PATH" ]; then
+            if ! grep -q "android.permission.INTERNET" "$MANIFEST_PATH"; then
+              sed -i '/<manifest/a \    <uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n    <uses-permission android:name="android.permission.VIBRATE" />' "$MANIFEST_PATH"
+            fi
+          fi
+
+      - name: Grant Execute Permission for Gradle
+        run: |
+          cd android
+          chmod +x gradlew
+
+      - name: Build Android APK (${{ github.event.inputs.build_type || 'debug' }})
+        run: |
+          cd android
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          if [ "$BUILD_TYPE" = "release" ]; then
+            ./gradlew assembleRelease
+          else
+            ./gradlew assembleDebug
+          fi
+
+      - name: Organize & Rename Output APK
+        id: organize_apk
+        run: |
+          VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
+          
+          mkdir -p output_apk
+          
+          if [ "$BUILD_TYPE" = "release" ] && [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
+            # Copy unsigned release APK
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output_apk/Connexa-v${VERSION_NAME}-release-unsigned.apk
+            echo "apk_path=output_apk/Connexa-v${VERSION_NAME}-release-unsigned.apk" >> $GITHUB_OUTPUT
+            echo "apk_name=Connexa-v${VERSION_NAME}-release-unsigned.apk" >> $GITHUB_OUTPUT
+          elif [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
+            # Copy debug APK (ready to install immediately on any phone)
+            cp android/app/build/outputs/apk/debug/app-debug.apk output_apk/Connexa-v${VERSION_NAME}-debug.apk
+            echo "apk_path=output_apk/Connexa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
+            echo "apk_name=Connexa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
+          else
+            # Fallback search for any generated APK
+            FOUND_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+            if [ -n "$FOUND_APK" ]; then
+              cp "$FOUND_APK" output_apk/Connexa-v${VERSION_NAME}.apk
+              echo "apk_path=output_apk/Connexa-v${VERSION_NAME}.apk" >> $GITHUB_OUTPUT
+              echo "apk_name=Connexa-v${VERSION_NAME}.apk" >> $GITHUB_OUTPUT
+            else
+              echo "Error: No APK file was generated."
+              exit 1
+            fi
+          fi
+
+      - name: Upload APK as Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Connexa-v${{ github.event.inputs.version_name || '1.0.0' }}-APK
+          path: output_apk/
+          retention-days: 90
+
+      - name: Create GitHub Release with APK (for tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output_apk/*.apk
+          name: Connexa Release ${{ github.ref_name }}
+          body: |
+            ## Connexa Messenger - Android APK Release 🎉
+            
+            - **Version**: `${{ github.ref_name }}`
+            - **Build Date**: `${{ github.event.head_commit.timestamp || 'Latest' }}`
+            - Download the attached APK below to install on your Android device.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
