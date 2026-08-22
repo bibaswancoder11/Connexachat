@@ -35,10 +35,10 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set Up Node.js 20
+      - name: Set Up Node.js 22
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Set Up Java 21 (JDK)
         uses: actions/setup-java@v4
