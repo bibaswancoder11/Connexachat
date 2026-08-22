@@ -63,11 +63,22 @@ jobs:
           npx cap add android || true
           npx cap sync android
 
-      - name: Configure App Version & Permissions
+      - name: Generate Native Connexa App Icons & Assets
+        run: |
+          npm run generate:icons
+
+      - name: Configure App Version, Name & Permissions
         run: |
           VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
           VERSION_CODE="${{ github.event.inputs.version_code || '1' }}"
           echo "Building Connexa version: $VERSION_NAME (Code: $VERSION_CODE)"
+
+          # Set app name in strings.xml
+          STRINGS_PATH="android/app/src/main/res/values/strings.xml"
+          if [ -f "$STRINGS_PATH" ]; then
+            sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">Connexa<\/string>/g' "$STRINGS_PATH" || true
+            sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">Connexa<\/string>/g' "$STRINGS_PATH" || true
+          fi
 
           # Update version in build.gradle
           if [ -f "android/app/build.gradle" ]; then
