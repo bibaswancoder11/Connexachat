@@ -39,21 +39,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
-      - name: Set Up Java 17 (JDK)
+      - name: Set Up Java 21 (JDK)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
-      - name: Set Up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install Web Dependencies
+      - name: Accept Android SDK Licenses
         run: |
-          npm ci || npm install
-          npm install --save @capacitor/core @capacitor/cli @capacitor/android
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+
+      - name: Install Web & Capacitor Dependencies
+        run: |
+          npm install
 
       - name: Build Web Application (Vite)
         run: |
@@ -76,7 +75,7 @@ jobs:
             sed -i "s/versionName \"1.0\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle || true
           fi
 
-          # Ensure Internet & Network Permissions in AndroidManifest.xml
+          # Ensure Network & Vibration Permissions in AndroidManifest.xml
           MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
           if [ -f "$MANIFEST_PATH" ]; then
             if ! grep -q "android.permission.INTERNET" "$MANIFEST_PATH"; then
