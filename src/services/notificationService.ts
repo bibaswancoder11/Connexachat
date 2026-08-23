@@ -1,10 +1,89 @@
-// Notification service providing Web Push Notifications, Service Worker integration, Sound Chimes (via Web Audio API), and Permission Management
+// Notification service providing Native Android Push & System Notifications (via Capacitor),
+// Web Push Notifications, Service Worker integration, Haptics, and Synthetic Web Audio Chimes.
+
+import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
+import { Haptics, NotificationType } from '@capacitor/haptics';
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default';
 
 let swRegistration: ServiceWorkerRegistration | null = null;
+let nativeChannelsInitialized = false;
 
-// Register Service Worker for background notifications on GitHub Pages or local environments
+// Callbacks for notification clicks (both Native and Web)
+export interface NotificationActionPayload {
+  type?: string;
+  chatId?: string;
+  friendUid?: string;
+  tab?: string;
+  [key: string]: any;
+}
+type NotificationActionHandler = (data: NotificationActionPayload) => void;
+const actionHandlers: Set<NotificationActionHandler> = new Set();
+
+export const onNotificationAction = (handler: NotificationActionHandler) => {
+  actionHandlers.add(handler);
+  return () => {
+    actionHandlers.delete(handler);
+  };
+};
+
+// Check if running inside native Android / iOS app via Capacitor
+export const isNativePlatform = (): boolean => {
+  return Capacitor.isNativePlatform();
+};
+
+// Initialize Android Native Notification Channels
+export const initNativeNotificationChannels = async () => {
+  if (!isNativePlatform() || nativeChannelsInitialized) return;
+
+  try {
+    // 1. High-priority Channel for Real-Time Direct & Group Messages
+    await LocalNotifications.createChannel({
+      id: 'connexa_messages_channel',
+      name: 'Connexa Real-Time Messages',
+      description: 'Incoming direct chats and group messages',
+      importance: 5, // MAX importance - heads-up banner display
+      visibility: 1, // Public on lockscreen
+      vibration: true,
+      lights: true,
+      lightColor: '#2563EB',
+    });
+
+    // 2. Channel for Friend Requests & Social Alerts
+    await LocalNotifications.createChannel({
+      id: 'connexa_requests_channel',
+      name: 'Connexa Friend Requests & Alerts',
+      description: 'Friend requests, connection acceptances, and invites',
+      importance: 5,
+      visibility: 1,
+      vibration: true,
+      lights: true,
+      lightColor: '#2563EB',
+    });
+
+    // 3. Register Native Action Listener (User taps notification in Android status bar)
+    await LocalNotifications.addListener('localNotificationActionPerformed', (notificationAction) => {
+      const extraData = notificationAction.notification.extra || {};
+      console.log('User tapped native notification:', notificationAction, extraData);
+      
+      actionHandlers.forEach((handler) => {
+        try {
+          handler(extraData);
+        } catch (e) {
+          console.warn('Error executing notification action handler:', e);
+        }
+      });
+    });
+
+    nativeChannelsInitialized = true;
+    console.log('Connexa native Android notification channels initialized successfully.');
+  } catch (err) {
+    console.warn('Failed to initialize Android Notification Channels:', err);
+  }
+};
+
+// Register Service Worker for background notifications on Web / PWA environments
 export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
     return null;
@@ -13,7 +92,7 @@ export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | n
   try {
     const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
     swRegistration = reg;
-    console.log('Connexa Service Worker registered successfully with scope:', reg.scope);
+    console.log('Connexa Service Worker registered with scope:', reg.scope);
     return reg;
   } catch (err) {
     console.warn('Service Worker registration warning:', err);
@@ -22,6 +101,7 @@ export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | n
 };
 
 export const isInIframe = (): boolean => {
+  if (isNativePlatform()) return false;
   if (typeof window === 'undefined') return false;
   try {
     return window.self !== window.top;
@@ -30,7 +110,18 @@ export const isInIframe = (): boolean => {
   }
 };
 
-export const getNotificationPermission = (): NotificationPermissionState => {
+export const getNotificationPermission = async (): Promise<NotificationPermissionState> => {
+  if (isNativePlatform()) {
+    try {
+      const check = await LocalNotifications.checkPermissions();
+      if (check.display === 'granted') return 'granted';
+      if (check.display === 'denied') return 'denied';
+      return 'default';
+    } catch (e) {
+      return 'default';
+    }
+  }
+
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'denied';
   }
@@ -38,6 +129,30 @@ export const getNotificationPermission = (): NotificationPermissionState => {
 };
 
 export const requestNotificationPermission = async (): Promise<NotificationPermissionState> => {
+  // 1. Native Android Permissions via Capacitor
+  if (isNativePlatform()) {
+    try {
+      await initNativeNotificationChannels();
+      const check = await LocalNotifications.checkPermissions();
+      if (check.display === 'granted') {
+        return 'granted';
+      }
+
+      const req = await LocalNotifications.requestPermissions();
+      if (req.display === 'granted') {
+        await initNativeNotificationChannels();
+        return 'granted';
+      } else if (req.display === 'denied') {
+        return 'denied';
+      }
+      return 'default';
+    } catch (err) {
+      console.warn('Native notification permission error:', err);
+      return 'default';
+    }
+  }
+
+  // 2. Web / PWA Fallback
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'denied';
   }
@@ -45,7 +160,6 @@ export const requestNotificationPermission = async (): Promise<NotificationPermi
   try {
     let currentPerm = Notification.permission;
     if (currentPerm === 'default') {
-      // Browsers disallow Notification.requestPermission() in cross-origin iframes
       if (isInIframe()) {
         console.warn('Notification permission request skipped inside iframe preview context.');
         return 'default';
@@ -59,7 +173,7 @@ export const requestNotificationPermission = async (): Promise<NotificationPermi
     return currentPerm as NotificationPermissionState;
   } catch (err) {
     console.warn('Failed to request notification permission:', err);
-    return getNotificationPermission();
+    return 'denied';
   }
 };
 
@@ -70,9 +184,46 @@ export const showWebNotification = async (
     icon?: string;
     tag?: string;
     data?: any;
+    channelId?: 'connexa_messages_channel' | 'connexa_requests_channel';
     onClick?: () => void;
   }
 ) => {
+  // A. Native Android Platform Notification Dispatch
+  if (isNativePlatform()) {
+    try {
+      await initNativeNotificationChannels();
+      const notifId = Math.floor((Date.now() % 1000000) + Math.random() * 900);
+
+      // Trigger native tactile haptic feedback
+      try {
+        await Haptics.notification({ type: NotificationType.Success });
+      } catch (hapticErr) {
+        // Safe ignore
+      }
+
+      await LocalNotifications.schedule({
+        notifications: [
+          {
+            id: notifId,
+            title: title,
+            body: options?.body || '',
+            channelId: options?.channelId || 'connexa_messages_channel',
+            smallIcon: 'ic_launcher',
+            iconColor: '#2563EB',
+            extra: options?.data || {},
+            actionTypeId: 'OPEN_CHAT',
+            schedule: { at: new Date(Date.now() + 50) },
+          }
+        ]
+      });
+
+      return;
+    } catch (err) {
+      console.warn('Error scheduling native notification:', err);
+    }
+  }
+
+  // B. Standard Web / Service Worker Notification
   if (typeof window === 'undefined' || !('Notification' in window)) return;
 
   if (Notification.permission === 'granted') {
@@ -80,7 +231,6 @@ export const showWebNotification = async (
       const defaultIcon = 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa';
       const notificationIcon = options?.icon || defaultIcon;
 
-      // Prefer Service Worker notification if available for background reliability
       if (!swRegistration && 'serviceWorker' in navigator) {
         swRegistration = await navigator.serviceWorker.ready.catch(() => null);
       }
@@ -98,7 +248,7 @@ export const showWebNotification = async (
         return;
       }
 
-      // Fallback to standard Window Notification constructor
+      // Window Notification Constructor Fallback
       const notification = new Notification(title, {
         body: options?.body || '',
         icon: notificationIcon,
@@ -123,12 +273,14 @@ export const sendWebNotification = (
   title: string,
   body?: string,
   icon?: string,
-  onClick?: () => void
+  onClick?: () => void,
+  data?: any,
+  channelId?: 'connexa_messages_channel' | 'connexa_requests_channel'
 ) => {
-  showWebNotification(title, { body, icon, onClick });
+  showWebNotification(title, { body, icon, onClick, data, channelId });
 };
 
-// Pure synthetic Web Audio API chime sound generator (no external files needed)
+// Pure synthetic Web Audio API chime sound generator
 let audioCtx: AudioContext | null = null;
 
 export const playNotificationSound = (type: 'message' | 'request' | 'group' | 'accepted' = 'message') => {
@@ -226,10 +378,9 @@ export const testNotification = async () => {
   playNotificationSound('accepted');
   if (perm === 'granted') {
     showWebNotification('Connexa Real-Time Alerts 🔔', {
-      body: 'Real-time background & sound notifications are active on this device!',
-      icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa-test'
+      body: 'Real-time notifications are enabled & active on your phone!',
+      icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa-test',
+      channelId: 'connexa_messages_channel'
     });
   }
 };
-
-

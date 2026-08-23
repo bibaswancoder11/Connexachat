@@ -12,7 +12,7 @@ import { NotificationToast, ToastNotificationData } from './components/Notificat
 import { ChatRoom, FriendRequest, UserProfile } from './types';
 import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
-import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker } from './services/notificationService';
+import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, onNotificationAction } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 
@@ -50,9 +50,22 @@ const ConnexaApp: React.FC = () => {
         // ignore
       }
 
-      // Handle notification clicks forwarded from Service Worker
+      // Handle native notification click events (when user taps Android status bar notification)
+      const unsubNativeNotif = onNotificationAction((payload) => {
+        if (payload?.chatId) {
+          setActiveChatId(payload.chatId);
+          setActiveTab('chats');
+        } else if (payload?.friendUid) {
+          handleDirectChat(payload.friendUid);
+        } else if (payload?.tab) {
+          setActiveTab(payload.tab as any);
+        }
+      });
+
+      // Handle notification clicks forwarded from Service Worker (Web / PWA)
+      let handleSwMessage: ((event: MessageEvent) => void) | null = null;
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-        const handleSwMessage = (event: MessageEvent) => {
+        handleSwMessage = (event: MessageEvent) => {
           if (event.data?.type === 'NOTIFICATION_CLICK') {
             const payload = event.data.payload;
             if (payload?.chatId) {
@@ -65,10 +78,14 @@ const ConnexaApp: React.FC = () => {
         };
 
         navigator.serviceWorker.addEventListener('message', handleSwMessage);
-        return () => {
-          navigator.serviceWorker.removeEventListener('message', handleSwMessage);
-        };
       }
+
+      return () => {
+        unsubNativeNotif();
+        if (handleSwMessage && 'serviceWorker' in navigator) {
+          navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+        }
+      };
     }
   }, [currentUser]);
 
@@ -145,11 +162,18 @@ const ConnexaApp: React.FC = () => {
                 const notifTitle = chat.isGroup ? `💬 ${chat.groupName}` : `💬 ${senderName}`;
                 const notifBody = chat.lastMessage || 'Sent a new message';
 
-                // Send System Web / Service Worker Notification
-                sendWebNotification(notifTitle, notifBody, avatar, () => {
-                  setActiveChatId(chat.id);
-                  setActiveTab('chats');
-                });
+                // Send System Web / Service Worker / Native Android Notification
+                sendWebNotification(
+                  notifTitle,
+                  notifBody,
+                  avatar,
+                  () => {
+                    setActiveChatId(chat.id);
+                    setActiveTab('chats');
+                  },
+                  { chatId: chat.id, tab: 'chats' },
+                  'connexa_messages_channel'
+                );
 
                 // Play audio chime
                 playNotificationChime(chat.isGroup ? 'group' : 'message');
@@ -196,10 +220,17 @@ const ConnexaApp: React.FC = () => {
           const reqTitle = 'New Friend Request 🤝';
           const reqBody = `${latest.fromDisplayName || 'Someone'} sent you a friend request on Connexa!`;
 
-          // Send System Web / Service Worker Notification
-          sendWebNotification(reqTitle, reqBody, latest.fromPhotoURL, () => {
-            setActiveTab('requests');
-          });
+          // Send System Web / Service Worker / Native Android Notification
+          sendWebNotification(
+            reqTitle,
+            reqBody,
+            latest.fromPhotoURL,
+            () => {
+              setActiveTab('requests');
+            },
+            { tab: 'requests' },
+            'connexa_requests_channel'
+          );
 
           // Play audio chime
           playNotificationChime('request');
@@ -242,10 +273,17 @@ const ConnexaApp: React.FC = () => {
           const notifTitle = 'Friend Request Accepted! 🎉';
           const notifBody = `${newFriend.displayName} (@${newFriend.username}) accepted your friend request! You can now start chatting.`;
 
-          // Send System Web / Service Worker Notification
-          sendWebNotification(notifTitle, notifBody, newFriend.photoURL, () => {
-            handleDirectChat(newFriend.uid);
-          });
+          // Send System Web / Service Worker / Native Android Notification
+          sendWebNotification(
+            notifTitle,
+            notifBody,
+            newFriend.photoURL,
+            () => {
+              handleDirectChat(newFriend.uid);
+            },
+            { friendUid: newFriend.uid, tab: 'chats' },
+            'connexa_requests_channel'
+          );
 
           // Play celebratory sound chime
           playNotificationChime('accepted');

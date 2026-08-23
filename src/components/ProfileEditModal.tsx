@@ -22,7 +22,9 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    setNotifState(getNotificationPermission());
+    getNotificationPermission().then((perm) => {
+      setNotifState(perm);
+    });
     setIframeNotice(isInIframe());
   }, []);
 
