@@ -1,14 +1,33 @@
 import React, { useState, useEffect } from 'react';
-import { X, Save, User, FileText, CheckCircle2, Bell, Volume2, ShieldCheck, ExternalLink, Info } from 'lucide-react';
+import { 
+  X, 
+  Save, 
+  User, 
+  FileText, 
+  CheckCircle2, 
+  Bell, 
+  Volume2, 
+  ShieldCheck, 
+  ExternalLink, 
+  Info,
+  UserX,
+  Mic,
+  Camera,
+  ChevronRight
+} from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AvatarPicker } from './AvatarPicker';
 import { testNotification, getNotificationPermission, requestNotificationPermission, isInIframe } from '../services/notificationService';
+import { requestMicrophonePermission, requestCameraPermission } from '../utils/mediaUtils';
+import { getBlockedUsers } from '../services/blockService';
+import { BlockedUsersModal } from './BlockedUsersModal';
 
 interface ProfileEditModalProps {
   onClose: () => void;
+  onSelectChatWithUser?: (uid: string) => void;
 }
 
-export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) => {
+export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onSelectChatWithUser }) => {
   const { userProfile, updateProfile } = useAuth();
   
   const [displayName, setDisplayName] = useState(userProfile?.displayName || '');
@@ -17,7 +36,11 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
   const [notifState, setNotifState] = useState<string>('default');
   const [iframeNotice, setIframeNotice] = useState<boolean>(false);
   const [notifSuccess, setNotifSuccess] = useState<string | null>(null);
+  const [mediaPermissionStatus, setMediaPermissionStatus] = useState<string | null>(null);
   
+  const [showBlockedModal, setShowBlockedModal] = useState(false);
+  const [blockedCount, setBlockedCount] = useState(0);
+
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
 
@@ -26,7 +49,25 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
       setNotifState(perm);
     });
     setIframeNotice(isInIframe());
-  }, []);
+
+    if (userProfile?.uid) {
+      setBlockedCount(getBlockedUsers(userProfile.uid).length);
+    }
+  }, [userProfile?.uid]);
+
+  const handleTestMediaPermissions = async () => {
+    setMediaPermissionStatus('Testing microphone and camera permissions...');
+    const micRes = await requestMicrophonePermission();
+    const camRes = await requestCameraPermission();
+
+    if (micRes.granted && camRes.granted) {
+      setMediaPermissionStatus('✅ Microphone & Camera access granted!');
+    } else if (micRes.granted) {
+      setMediaPermissionStatus('✅ Microphone granted. (Camera: ' + (camRes.error || 'not granted') + ')');
+    } else {
+      setMediaPermissionStatus('⚠️ ' + (micRes.error || camRes.error || 'Permissions needed in browser settings'));
+    }
+  };
 
   useEffect(() => {
     if (userProfile) {
@@ -225,6 +266,55 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
             </div>
           </div>
 
+          {/* Media & Voice Permissions Settings */}
+          <div className="p-4 bg-slate-50 dark:bg-slate-800/80 rounded-2xl border border-slate-200 dark:border-slate-700/80 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-purple-100 dark:bg-purple-950 text-purple-600 dark:text-purple-400 rounded-xl">
+                  <Mic className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 dark:text-white">Media & Voice Permissions</h4>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">Microphone & camera for voice notes & media</p>
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTestMediaPermissions}
+              className="w-full py-2 px-3 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 rounded-xl text-xs font-medium transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Camera className="w-3.5 h-3.5 text-purple-500" />
+              <span>Test Microphone & Camera Access</span>
+            </button>
+
+            {mediaPermissionStatus && (
+              <p className="text-[11px] text-slate-600 dark:text-slate-300 font-medium text-center bg-white dark:bg-slate-900/60 p-2 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+                {mediaPermissionStatus}
+              </p>
+            )}
+          </div>
+
+          {/* Blocked Users Manager */}
+          <div 
+            onClick={() => setShowBlockedModal(true)}
+            className="p-3.5 bg-slate-50 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700/80 flex items-center justify-between cursor-pointer transition-colors"
+          >
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-rose-100 dark:bg-rose-950 text-rose-600 dark:text-rose-400 rounded-xl">
+                <UserX className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-bold text-slate-900 dark:text-white">Blocked Users</h4>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {blockedCount === 0 ? 'No blocked contacts' : `${blockedCount} user${blockedCount > 1 ? 's' : ''} blocked locally`}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-4 h-4 text-slate-400" />
+          </div>
+
           {/* Save Button */}
           <div className="flex gap-3 pt-2">
             <button
@@ -244,6 +334,18 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose }) =
             </button>
           </div>
         </form>
+
+        {/* Blocked Users Modal */}
+        {showBlockedModal && userProfile && (
+          <BlockedUsersModal
+            currentUid={userProfile.uid}
+            onClose={() => {
+              setShowBlockedModal(false);
+              setBlockedCount(getBlockedUsers(userProfile.uid).length);
+            }}
+            onSelectChatWithUser={onSelectChatWithUser}
+          />
+        )}
       </div>
     </div>
   );

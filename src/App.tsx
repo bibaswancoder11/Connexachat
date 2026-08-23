@@ -15,6 +15,8 @@ import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFr
 import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, onNotificationAction } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
+import { ShareMediaModal, SharedMediaItem } from './components/ShareMediaModal';
+import { initShareTargetListener, subscribeToShareIntents } from './utils/apkIntentHandler';
 
 const ConnexaApp: React.FC = () => {
   const { currentUser, userProfile, loading } = useAuth();
@@ -28,6 +30,7 @@ const ConnexaApp: React.FC = () => {
   const [friends, setFriends] = useState<UserProfile[]>([]);
 
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [sharedMediaPayload, setSharedMediaPayload] = useState<{ items: SharedMediaItem[]; text?: string } | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
   // Keep track of previous states and notified IDs to trigger notifications reliably without duplicates
@@ -62,6 +65,14 @@ const ConnexaApp: React.FC = () => {
         }
       });
 
+      // Handle share intents from Android native share sheet / PWA Web Share Target
+      initShareTargetListener();
+      const unsubShare = subscribeToShareIntents((payload) => {
+        if (payload && (payload.items.length > 0 || payload.text)) {
+          setSharedMediaPayload(payload);
+        }
+      });
+
       // Handle notification clicks forwarded from Service Worker (Web / PWA)
       let handleSwMessage: ((event: MessageEvent) => void) | null = null;
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
@@ -82,6 +93,7 @@ const ConnexaApp: React.FC = () => {
 
       return () => {
         unsubNativeNotif();
+        unsubShare();
         if (handleSwMessage && 'serviceWorker' in navigator) {
           navigator.serviceWorker.removeEventListener('message', handleSwMessage);
         }
@@ -385,6 +397,7 @@ const ConnexaApp: React.FC = () => {
                 <ChatView
                   chat={activeChat}
                   friends={friends}
+                  chats={chats}
                   onGroupLeft={() => {
                     setActiveChatId(null);
                   }}
@@ -468,6 +481,24 @@ const ConnexaApp: React.FC = () => {
             onGroupCreated={(newChatId) => {
               setActiveChatId(newChatId);
               setActiveTab('chats');
+            }}
+          />
+        )}
+
+        {/* Multi-Recipient / Native Share Target Media Modal */}
+        {sharedMediaPayload && userProfile && (
+          <ShareMediaModal
+            currentUser={userProfile}
+            friends={friends}
+            chats={chats}
+            initialItems={sharedMediaPayload.items}
+            onClose={() => setSharedMediaPayload(null)}
+            onSuccess={(chatIds) => {
+              setSharedMediaPayload(null);
+              if (chatIds.length === 1) {
+                setActiveChatId(chatIds[0]);
+                setActiveTab('chats');
+              }
             }}
           />
         )}

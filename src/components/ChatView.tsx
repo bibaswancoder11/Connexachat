@@ -2,33 +2,48 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Send, 
   Image as ImageIcon, 
+  Video as VideoIcon, 
   Mic, 
   Square, 
   Smile, 
   Trash2, 
   CheckCheck, 
   X, 
-  ShieldAlert,
-  Play,
-  Pause,
-  Users2,
-  Info,
-  Check,
-  ArrowLeft,
-  Copy,
-  MoreVertical,
-  Download,
-  ZoomIn,
-  ZoomOut,
-  Maximize2,
-  Loader2,
-  ImageOff,
-  ExternalLink
+  ShieldAlert, 
+  ShieldCheck,
+  Play, 
+  Pause, 
+  Users2, 
+  Info, 
+  Check, 
+  ArrowLeft, 
+  Copy, 
+  MoreVertical, 
+  Download, 
+  ZoomIn, 
+  ZoomOut, 
+  Maximize2, 
+  Loader2, 
+  ImageOff, 
+  ExternalLink,
+  Share2,
+  UserX,
+  Unlock,
+  AlertTriangle,
+  Camera,
+  Film
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
 import { compressImage, downloadImageDataUrl } from '../utils/imageUtils';
+import { 
+  processVideoFile, 
+  requestMicrophonePermission, 
+  requestCameraPermission, 
+  downloadVideoDataUrl,
+  VideoMetadata 
+} from '../utils/mediaUtils';
 import { 
   subscribeToMessages, 
   sendMessage, 
@@ -37,60 +52,117 @@ import {
   toggleMessageReaction, 
   deleteMessage 
 } from '../services/chatService';
+import { 
+  isUserBlockedLocally, 
+  blockUserLocally, 
+  unblockUserLocally, 
+  subscribeToBlockedUsers 
+} from '../services/blockService';
 import { GroupInfoModal } from './GroupInfoModal';
 import { EnlargeableAvatar } from './EnlargeableAvatar';
+import { VideoPlayerMessage } from './VideoPlayerMessage';
+import { AudioVoiceMessage } from './AudioVoiceMessage';
+import { ShareMediaModal } from './ShareMediaModal';
 
 interface ChatViewProps {
   chat: ChatRoom;
   friends: UserProfile[];
+  chats?: ChatRoom[];
   onGroupLeft?: () => void;
   onBackToChats?: () => void;
 }
 
 const EMOJI_REACTIONS = ['❤️', '👍', '😂', '🔥', '😮'];
 
-export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, onBackToChats }) => {
+export const ChatView: React.FC<ChatViewProps> = ({ 
+  chat, 
+  friends, 
+  chats = [], 
+  onGroupLeft, 
+  onBackToChats 
+}) => {
   const { userProfile } = useAuth();
   const isGroup = chat.isGroup;
   const otherUser = chat.otherUser;
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
+  
+  // Audio Voice Recording State
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   
+  // Media Attachments
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [previewImage, setPreviewImage] = useState<string | null>(null);
-  const [isCompressingImage, setIsCompressingImage] = useState(false);
+  const [selectedVideo, setSelectedVideo] = useState<VideoMetadata | null>(null);
+  const [isProcessingMedia, setIsProcessingMedia] = useState(false);
+  const [mediaProcessingLabel, setMediaProcessingLabel] = useState('');
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+
+  // Fullscreen Lightbox
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewVideo, setPreviewVideo] = useState<string | null>(null);
   const [lightboxZoom, setLightboxZoom] = useState(1);
   const [failedImageIds, setFailedImageIds] = useState<{ [msgId: string]: boolean }>({});
 
+  // Local Blocking State
+  const [isBlocked, setIsBlocked] = useState<boolean>(false);
+  const [showBlockConfirmModal, setShowBlockConfirmModal] = useState(false);
+
+  // Chat UI states
   const [showEmojiPicker, setShowEmojiPicker] = useState<string | null>(null); // messageId
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
+  const [showShareMediaModal, setShowShareMediaModal] = useState(false);
   const [confirmDeleteModal, setConfirmDeleteModal] = useState<{ id: string; text: string } | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const recordingTimerRef = useRef<any>(null);
 
   // Keyboard shortcut listener for Lightbox (ESC to close)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && previewImage) {
-        setPreviewImage(null);
-        setLightboxZoom(1);
+      if (e.key === 'Escape') {
+        if (previewImage) {
+          setPreviewImage(null);
+          setLightboxZoom(1);
+        }
+        if (previewVideo) {
+          setPreviewVideo(null);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [previewImage]);
+  }, [previewImage, previewVideo]);
+
+  // Subscribe to blocked users changes
+  useEffect(() => {
+    if (!userProfile?.uid || isGroup || !otherUser?.uid) {
+      setIsBlocked(false);
+      return;
+    }
+
+    const checkBlocked = () => {
+      setIsBlocked(isUserBlockedLocally(userProfile.uid, otherUser.uid));
+    };
+
+    checkBlocked();
+    const unsub = subscribeToBlockedUsers(userProfile.uid, () => {
+      checkBlocked();
+    });
+
+    return () => unsub();
+  }, [userProfile?.uid, otherUser?.uid, isGroup]);
 
   // Subscribe to real-time messages
   useEffect(() => {
@@ -114,7 +186,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
   // Typing indicator trigger
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(e.target.value);
-    if (chat.id && userProfile) {
+    if (chat.id && userProfile && !isBlocked) {
       setTypingIndicator(chat.id, userProfile.uid, e.target.value.length > 0);
     }
   };
@@ -125,11 +197,12 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
       alert('Please select a valid image file (PNG, JPG, WebP, GIF).');
       return;
     }
-    if (file.size > 15 * 1024 * 1024) {
-      alert('Image file is too large. Please select an image under 15MB.');
+    if (file.size > 20 * 1024 * 1024) {
+      alert('Image file is too large. Please select an image under 20MB.');
       return;
     }
-    setIsCompressingImage(true);
+    setIsProcessingMedia(true);
+    setMediaProcessingLabel('Optimizing photo...');
     try {
       const compressed = await compressImage(file, {
         maxWidth: 1200,
@@ -137,14 +210,36 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         quality: 0.82
       });
       setSelectedImage(compressed);
+      setSelectedVideo(null);
     } catch (err) {
       console.error('Failed to process image:', err);
       alert('Could not process image. Please try another photo.');
     } finally {
-      setIsCompressingImage(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      setIsProcessingMedia(false);
+      setMediaProcessingLabel('');
+      if (imageInputRef.current) imageInputRef.current.value = '';
+    }
+  };
+
+  // Process a video file before attaching
+  const processAndSetVideoFile = async (file: File) => {
+    if (!file.type.startsWith('video/')) {
+      alert('Please select a valid video file (MP4, WebM, MOV).');
+      return;
+    }
+    setIsProcessingMedia(true);
+    setMediaProcessingLabel('Processing video clip...');
+    try {
+      const meta = await processVideoFile(file);
+      setSelectedVideo(meta);
+      setSelectedImage(null);
+    } catch (err: any) {
+      console.error('Failed to process video:', err);
+      alert(err.message || 'Could not process video file.');
+    } finally {
+      setIsProcessingMedia(false);
+      setMediaProcessingLabel('');
+      if (videoInputRef.current) videoInputRef.current.value = '';
     }
   };
 
@@ -156,7 +251,15 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     }
   };
 
-  // Clipboard paste image support
+  // Handle Video File Input
+  const handleVideoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processAndSetVideoFile(file);
+    }
+  };
+
+  // Clipboard paste image/video support
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items;
     if (!items) return;
@@ -172,7 +275,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     }
   };
 
-  // Drag and drop image handlers
+  // Drag and drop media handlers
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -194,25 +297,48 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
       const file = files[0];
       if (file.type.startsWith('image/')) {
         processAndSetImageFile(file);
+      } else if (file.type.startsWith('video/')) {
+        processAndSetVideoFile(file);
       }
     }
   };
 
-  // Send Text / Image Message
-  const handleSendText = async (e?: React.FormEvent) => {
+  // Send Text / Image / Video Message
+  const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if ((!inputText.trim() && !selectedImage) || !userProfile || !chat.id || isCompressingImage) return;
+    if (isBlocked) {
+      alert('You have blocked this user. Please unblock them before sending messages.');
+      return;
+    }
+    if ((!inputText.trim() && !selectedImage && !selectedVideo) || !userProfile || !chat.id || isProcessingMedia) return;
 
     const textToSend = inputText.trim();
     const imgToSend = selectedImage;
+    const vidToSend = selectedVideo;
 
     setInputText('');
     setSelectedImage(null);
+    setSelectedVideo(null);
+    setShowAttachMenu(false);
     setTypingIndicator(chat.id, userProfile.uid, false);
 
     try {
       if (imgToSend) {
         await sendMessage(chat.id, userProfile.uid, textToSend, 'image', imgToSend, userProfile);
+      } else if (vidToSend) {
+        await sendMessage(
+          chat.id, 
+          userProfile.uid, 
+          textToSend, 
+          'video', 
+          vidToSend.dataUrl, 
+          userProfile,
+          {
+            mediaThumbnail: vidToSend.thumbnailUrl,
+            mediaDuration: vidToSend.duration,
+            mediaSize: vidToSend.size
+          }
+        );
       } else {
         await sendMessage(chat.id, userProfile.uid, textToSend, 'text', undefined, userProfile);
       }
@@ -222,8 +348,19 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     }
   };
 
-  // Audio Voice Note Recording
+  // Audio Voice Note Recording with Permissions
   const startRecording = async () => {
+    if (isBlocked) {
+      alert('You have blocked this user. Unblock them first to send voice notes.');
+      return;
+    }
+
+    const perm = await requestMicrophonePermission();
+    if (!perm.granted) {
+      alert(perm.error || 'Microphone access is required to send voice notes.');
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       const recorder = new MediaRecorder(stream);
@@ -251,7 +388,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         setRecordingTime(prev => prev + 1);
       }, 1000);
     } catch (err) {
-      alert('Microphone access is required to send voice notes.');
+      alert('Microphone access is required to record voice notes.');
     }
   };
 
@@ -263,20 +400,23 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     }
   };
 
-  const togglePlayAudio = (msgId: string, url: string) => {
-    if (playingAudioId === msgId) {
-      audioRef.current?.pause();
-      setPlayingAudioId(null);
+  const handleToggleBlock = () => {
+    if (!userProfile || !otherUser) return;
+    if (isBlocked) {
+      unblockUserLocally(userProfile.uid, otherUser.uid);
+      setIsBlocked(false);
+      setShowHeaderMenu(false);
     } else {
-      if (audioRef.current) {
-        audioRef.current.pause();
-      }
-      const newAudio = new Audio(url);
-      audioRef.current = newAudio;
-      newAudio.play();
-      setPlayingAudioId(msgId);
-      newAudio.onended = () => setPlayingAudioId(null);
+      setShowBlockConfirmModal(true);
+      setShowHeaderMenu(false);
     }
+  };
+
+  const confirmBlock = () => {
+    if (!userProfile || !otherUser) return;
+    blockUserLocally(userProfile.uid, otherUser);
+    setIsBlocked(true);
+    setShowBlockConfirmModal(false);
   };
 
   const formatTimestamp = (timestamp: any) => {
@@ -320,8 +460,8 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
           <div className="p-4 bg-white/20 rounded-full animate-bounce">
             <ImageIcon className="w-10 h-10 text-white" />
           </div>
-          <h3 className="text-lg font-bold">Drop Image to Share</h3>
-          <p className="text-xs text-blue-100">Release file to attach photo to this chat</p>
+          <h3 className="text-lg font-bold">Drop Photos or Videos to Share</h3>
+          <p className="text-xs text-blue-100">Release file to attach media to this chat</p>
         </div>
       )}
       
@@ -358,34 +498,49 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                 <h3 className="font-bold text-sm text-slate-900 dark:text-white truncate">
                   {title}
                 </h3>
-                {!isGroup && (
+                {!isGroup && otherUser && (
                   <span className="text-xs font-mono text-blue-600 dark:text-blue-400 font-semibold shrink-0">
-                    @{otherUser?.username}{otherUser?.userTag}
+                    @{otherUser.username}{otherUser.userTag}
                   </span>
                 )}
               </div>
 
-            {isGroup ? (
-              <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
-                <span>{chat.participants?.length || 0} members • Click for info</span>
-              </p>
-            ) : isUserOnline(otherUser) ? (
-              <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Online</span>
-              </p>
-            ) : (
-              <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                <span>Offline</span>
-              </p>
-            )}
+              {isGroup ? (
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
+                  <span>{chat.participants?.length || 0} members • Click for info</span>
+                </p>
+              ) : isBlocked ? (
+                <p className="text-[11px] text-rose-500 font-medium flex items-center gap-1">
+                  <UserX className="w-3 h-3" />
+                  <span>Blocked on this device</span>
+                </p>
+              ) : isUserOnline(otherUser) ? (
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Online</span>
+                </p>
+              ) : (
+                <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  <span>Offline</span>
+                </p>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
         {/* Action icons */}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 relative">
+          {/* Share Media across friends/groups button */}
+          <button
+            type="button"
+            onClick={() => setShowShareMediaModal(true)}
+            className="p-2 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            title="Share media with multiple friends or groups"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
           {isGroup ? (
             <button
               onClick={() => setShowGroupInfoModal(true)}
@@ -395,12 +550,55 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
               <span className="hidden sm:inline">Group Info</span>
             </button>
           ) : (
-            <button
-              title="Encrypted Chat Active"
-              className="p-2 text-blue-600 dark:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-            >
-              <ShieldAlert className="w-5 h-5" />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+                className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                title="Options"
+              >
+                <MoreVertical className="w-5 h-5" />
+              </button>
+
+              {/* Header Dropdown Menu */}
+              {showHeaderMenu && (
+                <div 
+                  className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-1.5 z-30 animate-in fade-in slide-in-from-top-1 duration-150"
+                  onClick={() => setShowHeaderMenu(false)}
+                >
+                  <button
+                    type="button"
+                    onClick={handleToggleBlock}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold rounded-xl transition-colors ${
+                      isBlocked
+                        ? 'text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+                        : 'text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40'
+                    }`}
+                  >
+                    {isBlocked ? (
+                      <>
+                        <Unlock className="w-4 h-4" />
+                        <span>Unblock User</span>
+                      </>
+                    ) : (
+                      <>
+                        <UserX className="w-4 h-4" />
+                        <span>Block User</span>
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowShareMediaModal(true)}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition-colors"
+                  >
+                    <Share2 className="w-4 h-4 text-blue-500" />
+                    <span>Share Photos/Videos</span>
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -417,7 +615,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
             </p>
             <p className="text-xs text-slate-400 max-w-xs">
               {isGroup
-                ? 'Send your first message to kick off the group conversation.'
+                ? 'Send your first message or media clip to kick off the conversation.'
                 : 'This is the beginning of your direct message history on Connexa.'}
             </p>
           </div>
@@ -463,7 +661,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                     />
                   )}
 
-                  {/* Message Bubble Container - Tapping selects/highlights */}
+                  {/* Message Bubble Container */}
                   <div
                     onClick={() => setSelectedMessageId(isSelected ? null : msg.id)}
                     className={`relative p-3.5 rounded-2xl text-xs md:text-sm leading-relaxed space-y-1.5 cursor-pointer transition-all ${
@@ -487,7 +685,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                         {failedImageIds[msg.id] ? (
                           <div className="p-3 rounded-xl bg-slate-100 dark:bg-slate-700/60 border border-slate-200 dark:border-slate-600 flex items-center gap-2 text-slate-500 text-xs">
                             <ImageOff className="w-4 h-4 text-slate-400" />
-                            <span>Image unavailable or corrupted</span>
+                            <span>Image unavailable</span>
                           </div>
                         ) : (
                           <div
@@ -516,20 +714,27 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                       </div>
                     )}
 
+                    {/* Video Attachment */}
+                    {msg.type === 'video' && msg.mediaUrl && (
+                      <div className="my-1">
+                        <VideoPlayerMessage
+                          mediaUrl={msg.mediaUrl}
+                          thumbnailUrl={msg.mediaThumbnail}
+                          duration={msg.mediaDuration}
+                          onOpenFullscreen={(url) => setPreviewVideo(url)}
+                        />
+                      </div>
+                    )}
+
                     {/* Audio Voice Note */}
                     {msg.type === 'audio' && msg.mediaUrl && (
-                      <div className="flex items-center gap-3 p-2 bg-black/10 dark:bg-white/10 rounded-xl min-w-[180px]">
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); togglePlayAudio(msg.id, msg.mediaUrl!); }}
-                          className="p-2 bg-blue-500 text-white rounded-full hover:bg-blue-400 transition-colors shrink-0"
-                        >
-                          {playingAudioId === msg.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-                        </button>
-                        <div className="flex-1">
-                          <span className="text-xs font-semibold block">Voice Note</span>
-                          <span className="text-[10px] opacity-80 font-mono">Audio recording</span>
-                        </div>
+                      <div className="my-1">
+                        <AudioVoiceMessage
+                          mediaUrl={msg.mediaUrl}
+                          isMe={isMe}
+                          isPlaying={playingAudioId === msg.id}
+                          onTogglePlay={() => setPlayingAudioId(playingAudioId === msg.id ? null : msg.id)}
+                        />
                       </div>
                     )}
 
@@ -563,7 +768,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                     )}
                   </div>
 
-                  {/* Actions Bar: Visible on hover, tap select, or when reaction picker is open */}
+                  {/* Actions Bar */}
                   <div className={`flex items-center gap-0.5 p-1 rounded-xl bg-white/90 dark:bg-slate-800/90 backdrop-blur-xs border border-slate-200/80 dark:border-slate-700/80 shadow-md transition-all ${
                     isSelected || showEmojiPicker === msg.id ? 'opacity-100 scale-100' : 'opacity-0 group-hover:opacity-100 scale-95 pointer-events-none group-hover:pointer-events-auto'
                   }`}>
@@ -609,7 +814,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
                           e.stopPropagation();
                           setConfirmDeleteModal({
                             id: msg.id,
-                            text: msg.text || (msg.type === 'image' ? 'Photo attachment' : msg.type === 'audio' ? 'Voice note' : 'Message')
+                            text: msg.text || (msg.type === 'image' ? 'Photo attachment' : msg.type === 'video' ? 'Video clip' : msg.type === 'audio' ? 'Voice note' : 'Message')
                           });
                         }}
                         className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
@@ -657,34 +862,45 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Selected Image Preview / Compression indicator before sending */}
-      {(selectedImage || isCompressingImage) && (
+      {/* Selected Media Preview (Image or Video) before sending */}
+      {(selectedImage || selectedVideo || isProcessingMedia) && (
         <div className="p-3 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
           <div className="flex items-center gap-3 min-w-0">
-            {isCompressingImage ? (
+            {isProcessingMedia ? (
               <div className="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-950/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
                 <Loader2 className="w-6 h-6 animate-spin" />
               </div>
-            ) : (
-              selectedImage && (
-                <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover ring-2 ring-blue-500/30 shrink-0" />
-              )
-            )}
+            ) : selectedImage ? (
+              <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover ring-2 ring-blue-500/30 shrink-0" />
+            ) : selectedVideo ? (
+              <div className="w-12 h-12 rounded-xl bg-black relative flex items-center justify-center overflow-hidden shrink-0 ring-2 ring-blue-500/30">
+                {selectedVideo.thumbnailUrl ? (
+                  <img src={selectedVideo.thumbnailUrl} alt="Video poster" className="w-full h-full object-cover" />
+                ) : (
+                  <VideoIcon className="w-6 h-6 text-white" />
+                )}
+                <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                  <Play className="w-3.5 h-3.5 fill-white text-white" />
+                </div>
+              </div>
+            ) : null}
+
             <div className="min-w-0">
               <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block truncate">
-                {isCompressingImage ? 'Optimizing image...' : 'Image Attached'}
+                {isProcessingMedia ? mediaProcessingLabel : selectedImage ? 'Photo Attached' : 'Video Attached'}
               </span>
               <span className="text-[10px] text-slate-500 dark:text-slate-400 block truncate">
-                {isCompressingImage ? 'Compressing for instant sharing' : 'Add optional text caption below and press Send'}
+                {isProcessingMedia ? 'Processing media for fast delivery' : 'Add optional text caption below and tap Send'}
               </span>
             </div>
           </div>
-          {!isCompressingImage && selectedImage && (
+
+          {!isProcessingMedia && (
             <button
               type="button"
-              onClick={() => setSelectedImage(null)}
+              onClick={() => { setSelectedImage(null); setSelectedVideo(null); }}
               className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shrink-0"
-              title="Remove image"
+              title="Remove media"
             >
               <X className="w-4 h-4" />
             </button>
@@ -692,70 +908,172 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         </div>
       )}
 
-      {/* Input Control Bar */}
-      <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
-        <form onSubmit={handleSendText} onPaste={handlePaste} className="flex items-center gap-2">
-          
-          {/* File input for images */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            onChange={handleImageSelect}
-            className="hidden"
-          />
+      {/* Input Control Bar OR Blocked Warning Bar */}
+      {isBlocked ? (
+        <div className="p-4 bg-rose-50 dark:bg-rose-950/40 border-t border-rose-200 dark:border-rose-900/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-400 rounded-xl shrink-0">
+              <UserX className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-rose-900 dark:text-rose-200">
+                You have blocked @{otherUser?.username || 'this user'}
+              </p>
+              <p className="text-[11px] text-rose-700 dark:text-rose-300">
+                You can receive their incoming messages, but you cannot reply or send messages until you unblock them.
+              </p>
+            </div>
+          </div>
 
           <button
             type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isCompressingImage}
-            className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
-            title="Attach image (or drag & drop / paste)"
+            onClick={handleToggleBlock}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-rose-600/20 transition-all shrink-0"
           >
-            <ImageIcon className="w-5 h-5" />
+            <Unlock className="w-3.5 h-3.5" />
+            <span>Unblock @{otherUser?.username || 'User'}</span>
           </button>
+        </div>
+      ) : (
+        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 relative">
+          
+          {/* Media Attach Menu Popover */}
+          {showAttachMenu && (
+            <div className="absolute left-4 bottom-full mb-2 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-2 flex gap-2 z-30 animate-in fade-in slide-in-from-bottom-2 duration-150">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAttachMenu(false);
+                  imageInputRef.current?.click();
+                }}
+                className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors text-[11px] font-semibold"
+              >
+                <div className="p-2.5 bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400 rounded-xl">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <span>Photo</span>
+              </button>
 
-          {/* Voice Note Button */}
-          {!isRecording ? (
-            <button
-              type="button"
-              onClick={startRecording}
-              className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              title="Record Voice Note"
-            >
-              <Mic className="w-5 h-5" />
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={stopRecording}
-              className="px-3 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 animate-pulse"
-            >
-              <Square className="w-3.5 h-3.5" />
-              <span>{recordingTime}s (Click to send)</span>
-            </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAttachMenu(false);
+                  videoInputRef.current?.click();
+                }}
+                className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors text-[11px] font-semibold"
+              >
+                <div className="p-2.5 bg-purple-100 dark:bg-purple-950 text-purple-600 dark:text-purple-400 rounded-xl">
+                  <Film className="w-5 h-5" />
+                </div>
+                <span>Video</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={async () => {
+                  setShowAttachMenu(false);
+                  const perm = await requestCameraPermission();
+                  if (!perm.granted) {
+                    alert(perm.error || 'Camera permission required.');
+                    return;
+                  }
+                  cameraInputRef.current?.click();
+                }}
+                className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors text-[11px] font-semibold"
+              >
+                <div className="p-2.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 rounded-xl">
+                  <Camera className="w-5 h-5" />
+                </div>
+                <span>Camera</span>
+              </button>
+            </div>
           )}
 
-          {/* Text input */}
-          <input
-            type="text"
-            value={inputText}
-            onChange={handleInputChange}
-            placeholder={isGroup ? `Message ${title}... (paste or drop images)` : `Message ${title}... (paste or drop images)`}
-            className="flex-1 py-3 px-4 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl text-xs md:text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 text-slate-900 dark:text-white"
-          />
+          <form onSubmit={handleSendMessage} onPaste={handlePaste} className="flex items-center gap-2">
+            
+            {/* Hidden File inputs */}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              onChange={handleImageSelect}
+              className="hidden"
+            />
+            <input
+              ref={videoInputRef}
+              type="file"
+              accept="video/*"
+              onChange={handleVideoSelect}
+              className="hidden"
+            />
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*,video/*"
+              capture="environment"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  if (file.type.startsWith('video/')) processAndSetVideoFile(file);
+                  else processAndSetImageFile(file);
+                }
+              }}
+              className="hidden"
+            />
 
-          {/* Send button */}
-          <button
-            type="submit"
-            disabled={(!inputText.trim() && !selectedImage) || isCompressingImage}
-            className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none"
-            title="Send Message"
-          >
-            <Send className="w-4 h-4" />
-          </button>
-        </form>
-      </div>
+            {/* Media Attachment Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowAttachMenu(!showAttachMenu)}
+              disabled={isProcessingMedia}
+              className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              title="Attach photo or video"
+            >
+              <ImageIcon className="w-5 h-5" />
+            </button>
+
+            {/* Voice Note Button */}
+            {!isRecording ? (
+              <button
+                type="button"
+                onClick={startRecording}
+                className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                title="Record Voice Note"
+              >
+                <Mic className="w-5 h-5" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={stopRecording}
+                className="px-3 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 animate-pulse"
+              >
+                <Square className="w-3.5 h-3.5" />
+                <span>{recordingTime}s (Tap to send)</span>
+              </button>
+            )}
+
+            {/* Text input */}
+            <input
+              type="text"
+              value={inputText}
+              onChange={handleInputChange}
+              placeholder={isGroup ? `Message ${title}...` : `Message ${title}...`}
+              className="flex-1 py-3 px-4 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl text-xs md:text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 text-slate-900 dark:text-white"
+            />
+
+            {/* Send button */}
+            <button
+              type="submit"
+              disabled={(!inputText.trim() && !selectedImage && !selectedVideo) || isProcessingMedia}
+              className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none"
+              title="Send Message"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Interactive Fullscreen Image Lightbox Modal */}
       {previewImage && (
@@ -763,7 +1081,7 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
           onClick={() => { setPreviewImage(null); setLightboxZoom(1); }}
           className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col justify-between p-4 sm:p-6 animate-in fade-in duration-150 cursor-default select-none"
         >
-          {/* Lightbox Controls Header */}
+          {/* Controls Header */}
           <div className="flex items-center justify-between z-10 w-full max-w-5xl mx-auto bg-slate-900/80 backdrop-blur-md p-3 rounded-2xl border border-white/10 text-white shadow-2xl">
             <div className="flex items-center gap-2">
               <ImageIcon className="w-4 h-4 text-blue-400" />
@@ -831,6 +1149,52 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
         </div>
       )}
 
+      {/* Fullscreen Video Modal */}
+      {previewVideo && (
+        <div
+          onClick={() => setPreviewVideo(null)}
+          className="fixed inset-0 z-50 bg-black/95 backdrop-blur-md flex flex-col justify-between p-4 sm:p-6 animate-in fade-in duration-150"
+        >
+          <div className="flex items-center justify-between z-10 w-full max-w-5xl mx-auto bg-slate-900/80 backdrop-blur-md p-3 rounded-2xl border border-white/10 text-white shadow-2xl">
+            <div className="flex items-center gap-2">
+              <VideoIcon className="w-4 h-4 text-purple-400" />
+              <span className="text-xs font-medium text-slate-200">Video Player</span>
+            </div>
+            <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                onClick={() => downloadVideoDataUrl(previewVideo, `connexa-video-${Date.now()}.mp4`)}
+                className="p-2 text-blue-400 hover:text-blue-300 rounded-xl hover:bg-white/10 transition-colors flex items-center gap-1.5 text-xs font-semibold"
+              >
+                <Download className="w-4 h-4" />
+                <span className="hidden sm:inline">Download</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPreviewVideo(null)}
+                className="p-2 text-slate-400 hover:text-rose-400 rounded-xl hover:bg-white/10 transition-colors ml-2"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 flex items-center justify-center p-4 my-2" onClick={(e) => e.stopPropagation()}>
+            <video
+              src={previewVideo}
+              controls
+              autoPlay
+              playsInline
+              className="max-w-full max-h-[80vh] rounded-2xl shadow-2xl object-contain bg-black"
+            />
+          </div>
+
+          <div className="text-center text-slate-400 text-[11px]">
+            Click background or press Esc to close
+          </div>
+        </div>
+      )}
+
       {/* Group Info Modal */}
       {showGroupInfoModal && isGroup && userProfile && (
         <GroupInfoModal
@@ -840,6 +1204,60 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
           onClose={() => setShowGroupInfoModal(false)}
           onGroupLeft={onGroupLeft}
         />
+      )}
+
+      {/* Share Media across friends/groups modal */}
+      {showShareMediaModal && userProfile && (
+        <ShareMediaModal
+          currentUser={userProfile}
+          friends={friends}
+          chats={chats}
+          onClose={() => setShowShareMediaModal(false)}
+        />
+      )}
+
+      {/* Block User Confirmation Modal */}
+      {showBlockConfirmModal && otherUser && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400">
+                <UserX className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">Block @{otherUser.username}?</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Stored locally on your device
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 rounded-2xl border border-amber-200/60 dark:border-amber-900/40 text-xs text-amber-800 dark:text-amber-300 space-y-1">
+              <p className="font-semibold">What happens when you block:</p>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                <li>You will still receive incoming messages from them.</li>
+                <li>You cannot send any messages to them until unblocked.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowBlockConfirmModal(false)}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmBlock}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all"
+              >
+                Block User
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete Message Confirmation Modal */}
@@ -899,4 +1317,3 @@ export const ChatView: React.FC<ChatViewProps> = ({ chat, friends, onGroupLeft, 
     </div>
   );
 };
-

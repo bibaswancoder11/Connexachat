@@ -61,9 +61,21 @@ export interface ChatMessage {
   senderPhoto?: string;
   text: string;
   mediaUrl?: string;
-  type: 'text' | 'image' | 'audio' | 'system';
+  mediaThumbnail?: string;
+  mediaDuration?: number;
+  mediaSize?: number;
+  type: 'text' | 'image' | 'video' | 'audio' | 'system';
   reactions?: { [uid: string]: string };
   timestamp: number | any;
   readBy?: string[];
+}
+
+export interface LocalBlockedUser {
+  uid: string;
+  username?: string;
+  displayName?: string;
+  photoURL?: string;
+  userTag?: string;
+  blockedAt: number;
 }
 

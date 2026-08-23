@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "generate:icons": "node scripts/generate-android-icons.js",
+    "configure:android": "node scripts/configure-android-manifest.js",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

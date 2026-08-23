@@ -338,14 +338,20 @@ export const sendMessage = async (
   chatId: string, 
   senderId: string, 
   text: string, 
-  type: 'text' | 'image' | 'audio' = 'text',
+  type: 'text' | 'image' | 'video' | 'audio' = 'text',
   mediaUrl?: string,
-  senderProfile?: UserProfile
+  senderProfile?: UserProfile,
+  extraMedia?: {
+    mediaThumbnail?: string;
+    mediaDuration?: number;
+    mediaSize?: number;
+  }
 ): Promise<void> => {
   const messagesRef = collection(db, 'chats', chatId, 'messages');
   
   let previewText = text;
   if (type === 'image') previewText = text.trim() ? `📷 ${text.trim()}` : '📷 Photo';
+  if (type === 'video') previewText = text.trim() ? `🎥 ${text.trim()}` : '🎥 Video';
   if (type === 'audio') previewText = '🎤 Voice Note';
 
   const newMessage = {
@@ -356,6 +362,9 @@ export const sendMessage = async (
     text,
     type,
     ...(mediaUrl ? { mediaUrl } : {}),
+    ...(extraMedia?.mediaThumbnail ? { mediaThumbnail: extraMedia.mediaThumbnail } : {}),
+    ...(extraMedia?.mediaDuration ? { mediaDuration: extraMedia.mediaDuration } : {}),
+    ...(extraMedia?.mediaSize ? { mediaSize: extraMedia.mediaSize } : {}),
     timestamp: serverTimestamp(),
     readBy: [senderId],
     reactions: {}
@@ -458,6 +467,7 @@ export const deleteMessage = async (chatId: string, messageId: string): Promise<
       const lastMsg = snap.docs[0].data() as ChatMessage;
       let previewText = lastMsg.text;
       if (lastMsg.type === 'image') previewText = '📷 Photo';
+      if (lastMsg.type === 'video') previewText = '🎥 Video';
       if (lastMsg.type === 'audio') previewText = '🎤 Voice Note';
 
       await updateDoc(chatRef, {

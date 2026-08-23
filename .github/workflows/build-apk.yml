@@ -86,15 +86,8 @@ jobs:
             sed -i "s/versionName \"1.0\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle || true
           fi
 
-          # Ensure Android Notification, Network & Vibration Permissions in AndroidManifest.xml
-          MANIFEST_PATH="android/app/src/main/AndroidManifest.xml"
-          if [ -f "$MANIFEST_PATH" ]; then
-            for PERM in "android.permission.INTERNET" "android.permission.ACCESS_NETWORK_STATE" "android.permission.POST_NOTIFICATIONS" "android.permission.VIBRATE" "android.permission.WAKE_LOCK" "android.permission.RECEIVE_BOOT_COMPLETED" "android.permission.SCHEDULE_EXACT_ALARM"; do
-              if ! grep -q "$PERM" "$MANIFEST_PATH"; then
-                sed -i "/<manifest/a \    <uses-permission android:name=\"$PERM\" \/>" "$MANIFEST_PATH"
-              fi
-            done
-          fi
+          # Ensure Android Notification, Microphone, Camera, Storage & Share Target Permissions in AndroidManifest.xml
+          npm run configure:android || true
 
       - name: Grant Execute Permission for Gradle
         run: |

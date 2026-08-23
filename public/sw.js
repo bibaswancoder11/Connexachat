@@ -58,3 +58,36 @@ self.addEventListener('push', (event) => {
 
   event.waitUntil(self.registration.showNotification(data.title, options));
 });
+
+// Intercept Web Share Target POST requests
+self.addEventListener('fetch', (event) => {
+  if (event.request.method === 'POST') {
+    const url = new URL(event.request.url);
+    if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html')) {
+      event.respondWith(
+        (async () => {
+          try {
+            const formData = await event.request.formData();
+            const mediaFiles = formData.getAll('media');
+            const title = formData.get('title') || '';
+            const text = formData.get('text') || '';
+
+            // Redirect to main page and notify active clients with the files
+            const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+            if (clientList.length > 0) {
+              clientList[0].postMessage({
+                type: 'WEB_SHARE_TARGET_MEDIA',
+                files: mediaFiles,
+                text: `${title} ${text}`.trim()
+              });
+              clientList[0].focus();
+            }
+          } catch (e) {
+            console.warn('Share target processing error in SW:', e);
+          }
+          return Response.redirect('./', 303);
+        })()
+      );
+    }
+  }
+});
