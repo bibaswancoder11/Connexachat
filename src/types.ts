@@ -14,6 +14,23 @@ export interface UserProfile {
     soundEnabled: boolean;
     inAppBanners: boolean;
   };
+  pushTokens?: {
+    [tokenKey: string]: {
+      token: string;
+      platform: 'android' | 'web' | 'ios';
+      updatedAt: number;
+    };
+  };
+  pushSubscriptions?: {
+    [subKey: string]: {
+      endpoint: string;
+      keys: {
+        p256dh: string;
+        auth: string;
+      };
+      updatedAt: number;
+    };
+  };
 }
 
 export interface FriendRequest {
@@ -24,6 +41,7 @@ export interface FriendRequest {
   fromPhotoURL: string;
   toUid: string;
   toUsername: string;
+  toDisplayName?: string;
   status: 'pending' | 'accepted' | 'rejected';
   createdAt: number | any;
 }
@@ -68,6 +86,12 @@ export interface ChatMessage {
   reactions?: { [uid: string]: string };
   timestamp: number | any;
   readBy?: string[];
+  deletedFor?: string[];
+  isCallLog?: boolean;
+  callId?: string;
+  callType?: CallType;
+  callStatus?: CallStatus;
+  callDuration?: number;
 }
 
 export interface LocalBlockedUser {
@@ -78,4 +102,33 @@ export interface LocalBlockedUser {
   userTag?: string;
   blockedAt: number;
 }
+
+export type CallType = 'audio' | 'video';
+export type CallStatus = 'ringing' | 'connected' | 'ended' | 'rejected' | 'missed' | 'busy';
+
+export interface CallSession {
+  id: string;
+  chatId: string;
+  type: CallType;
+  callerUid: string;
+  callerName: string;
+  callerAvatar: string;
+  recipientUid: string;
+  recipientName: string;
+  recipientAvatar: string;
+  status: CallStatus;
+  offer?: {
+    type: 'offer';
+    sdp: string;
+  };
+  answer?: {
+    type: 'answer';
+    sdp: string;
+  };
+  createdAt: number | any;
+  connectedAt?: number | any;
+  endedAt?: number | any;
+  durationSeconds?: number;
+}
+
 

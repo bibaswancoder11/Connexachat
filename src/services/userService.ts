@@ -362,3 +362,52 @@ export const searchUsers = async (searchTerm: string, currentUid: string): Promi
     return nameMatch || usernameMatch || tagMatch || uidMatch || emailMatch || combinedMatch;
   });
 };
+
+export const saveUserPushToken = async (
+  uid: string,
+  token: string,
+  platform: 'android' | 'web' | 'ios' = 'android'
+): Promise<void> => {
+  if (!uid || !token) return;
+  const tokenKey = token.replace(/[^a-zA-Z0-9_-]/g, '_').slice(-80);
+  try {
+    const userRef = doc(db, 'users', uid);
+    await updateDoc(userRef, {
+      [`pushTokens.${tokenKey}`]: {
+        token,
+        platform,
+        updatedAt: Date.now()
+      }
+    });
+    console.log(`✅ Stored ${platform} push token for user ${uid}`);
+  } catch (e) {
+    console.warn('Could not save push token to Firestore:', e);
+  }
+};
+
+export const saveUserPushSubscription = async (
+  uid: string,
+  sub: any
+): Promise<void> => {
+  if (!uid || !sub) return;
+  try {
+    const json = typeof sub.toJSON === 'function' ? sub.toJSON() : sub;
+    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+    const subKey = btoa(json.endpoint).replace(/[^a-zA-Z0-9_-]/g, '_').slice(-60);
+    const userRef = doc(db, 'users', uid);
+    await updateDoc(userRef, {
+      [`pushSubscriptions.${subKey}`]: {
+        endpoint: json.endpoint,
+        keys: {
+          p256dh: json.keys.p256dh,
+          auth: json.keys.auth
+        },
+        updatedAt: Date.now()
+      }
+    });
+    console.log(`✅ Stored Web Push subscription for user ${uid}`);
+  } catch (e) {
+    console.warn('Could not save push subscription to Firestore:', e);
+  }
+};
+

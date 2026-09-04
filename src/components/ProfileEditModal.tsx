@@ -87,10 +87,10 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onS
       return;
     }
 
-    const state = await requestNotificationPermission();
+    const state = await requestNotificationPermission(userProfile?.uid);
     setNotifState(state);
     if (state === 'granted') {
-      testNotification();
+      testNotification(userProfile?.uid);
       setNotifSuccess('Push notifications enabled & chime tested!');
     } else if (state === 'denied') {
       setNotifSuccess('Notifications are blocked by your browser settings. Please enable them in your address bar lock icon.');

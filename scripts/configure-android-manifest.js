@@ -86,5 +86,22 @@ if (!content.includes('android.intent.action.SEND_MULTIPLE')) {
   );
 }
 
+// 5. FCM Push Notification metadata inside <application>
+const fcmMetadata = `
+        <!-- Firebase Cloud Messaging Push Notification Default Configuration -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="connexa_messages_channel" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@mipmap/ic_launcher" />`;
+
+if (!content.includes('com.google.firebase.messaging.default_notification_channel_id')) {
+  content = content.replace(
+    '</application>',
+    `${fcmMetadata}\n    </application>`
+  );
+}
+
 fs.writeFileSync(manifestPath, content, 'utf8');
-console.log('✅ AndroidManifest.xml successfully configured with media permissions, features, and native share sheet intent filters!');
+console.log('✅ AndroidManifest.xml successfully configured with media permissions, features, FCM push metadata, and native share sheet intent filters!');

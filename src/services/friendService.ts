@@ -13,6 +13,7 @@ import {
 import { db } from '../firebase';
 import { UserProfile, FriendRequest, FriendRelation } from '../types';
 import { getUserProfile } from './userService';
+import { dispatchBackgroundPushNotification } from './notificationService';
 
 export const getFriendshipId = (uid1: string, uid2: string): string => {
   return [uid1, uid2].sort().join('_');
@@ -42,6 +43,19 @@ export const sendFriendRequest = async (
   };
 
   await setDoc(reqRef, requestData);
+
+  // Dispatch background push notification to target user
+  dispatchBackgroundPushNotification({
+    recipientUids: [targetUser.uid],
+    title: '👋 New Friend Request',
+    body: `${currentUser.displayName} (@${currentUser.username}) sent you a friend request!`,
+    icon: currentUser.photoURL,
+    data: {
+      type: 'friend_request',
+      friendUid: currentUser.uid,
+      tab: 'friends'
+    }
+  }).catch(e => console.warn('Friend request push dispatch warning:', e));
 };
 
 export const acceptFriendRequest = async (
@@ -58,6 +72,19 @@ export const acceptFriendRequest = async (
 
   // Delete or update friend request
   await deleteDoc(doc(db, 'friendRequests', request.id));
+
+  // Dispatch background push notification to original requester
+  dispatchBackgroundPushNotification({
+    recipientUids: [request.fromUid],
+    title: '🎉 Friend Request Accepted',
+    body: `${request.toDisplayName || request.toUsername || 'Someone'} accepted your friend request!`,
+    icon: request.fromPhotoURL,
+    data: {
+      type: 'friend_accepted',
+      friendUid: request.toUid,
+      tab: 'friends'
+    }
+  }).catch(e => console.warn('Friend accept push dispatch warning:', e));
 };
 
 export const rejectOrCancelFriendRequest = async (requestId: string): Promise<void> => {

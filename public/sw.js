@@ -13,16 +13,15 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const clickData = event.notification.data || {};
-  const targetUrl = clickData.url || self.location.origin;
+  const chatId = clickData.chatId;
+  const targetUrl = chatId ? `./?chatId=${encodeURIComponent(chatId)}` : './';
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if ('focus' in client) {
           client.focus();
-          if (clickData.action) {
-            client.postMessage({ type: 'NOTIFICATION_CLICK', payload: clickData });
-          }
+          client.postMessage({ type: 'NOTIFICATION_CLICK', payload: clickData });
           return;
         }
       }
@@ -33,12 +32,19 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Handle push events if browser push messaging is triggered
+// Handle push events when app or browser tab is closed/in background
 self.addEventListener('push', (event) => {
-  let data = { title: 'New Notification on Connexa', body: 'You have a new message!' };
+  let data = {
+    title: 'Connexa Messenger',
+    body: 'You have a new incoming message!',
+    icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+    badge: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+    data: {}
+  };
+
   try {
     if (event.data) {
-      data = event.data.json();
+      data = { ...data, ...event.data.json() };
     }
   } catch (e) {
     if (event.data) {
@@ -47,16 +53,19 @@ self.addEventListener('push', (event) => {
   }
 
   const options = {
-    body: data.body || '',
+    body: data.body || 'New message received',
     icon: data.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
-    badge: data.badge || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
-    tag: data.tag || 'connexa-msg',
+    badge: data.badge || data.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+    tag: data.tag || (data.data?.chatId ? `connexa-chat-${data.data.chatId}` : 'connexa-msg'),
     data: data.data || {},
-    vibrate: [200, 100, 200],
-    renotify: true
+    vibrate: [200, 100, 200, 100, 200],
+    renotify: true,
+    actions: [
+      { action: 'open', title: 'Open Chat' }
+    ]
   };
 
-  event.waitUntil(self.registration.showNotification(data.title, options));
+  event.waitUntil(self.registration.showNotification(data.title || 'Connexa Messenger', options));
 });
 
 // Intercept Web Share Target POST requests

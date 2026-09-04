@@ -1,14 +1,17 @@
-// Notification service providing Native Android Push & System Notifications (via Capacitor),
-// Web Push Notifications, Service Worker integration, Haptics, and Synthetic Web Audio Chimes.
+// Notification service providing Native Android Push (via Capacitor PushNotifications & FCM),
+// Local Notifications (Capacitor), Web Push (Service Worker + VAPID), Haptics, and Audio Chimes.
 
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
+import { PushNotifications, PushNotificationSchema, ActionPerformed, Token } from '@capacitor/push-notifications';
 import { Haptics, NotificationType } from '@capacitor/haptics';
+import { saveUserPushToken, saveUserPushSubscription } from './userService';
 
 export type NotificationPermissionState = 'granted' | 'denied' | 'default';
 
 let swRegistration: ServiceWorkerRegistration | null = null;
 let nativeChannelsInitialized = false;
+let pushListenersRegistered = false;
 
 // Callbacks for notification clicks (both Native and Web)
 export interface NotificationActionPayload {
@@ -16,8 +19,10 @@ export interface NotificationActionPayload {
   chatId?: string;
   friendUid?: string;
   tab?: string;
+  senderId?: string;
   [key: string]: any;
 }
+
 type NotificationActionHandler = (data: NotificationActionPayload) => void;
 const actionHandlers: Set<NotificationActionHandler> = new Set();
 
@@ -28,10 +33,42 @@ export const onNotificationAction = (handler: NotificationActionHandler) => {
   };
 };
 
+export const triggerActionHandlers = (data: NotificationActionPayload) => {
+  actionHandlers.forEach((handler) => {
+    try {
+      handler(data);
+    } catch (e) {
+      console.warn('Error executing notification action handler:', e);
+    }
+  });
+};
+
 // Check if running inside native Android / iOS app via Capacitor
 export const isNativePlatform = (): boolean => {
   return Capacitor.isNativePlatform();
 };
+
+export const isInIframe = (): boolean => {
+  if (isNativePlatform()) return false;
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.self !== window.top;
+  } catch (e) {
+    return true;
+  }
+};
+
+// Convert base64 URL string to Uint8Array for Web Push applicationServerKey
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
 
 // Initialize Android Native Notification Channels
 export const initNativeNotificationChannels = async () => {
@@ -62,18 +99,11 @@ export const initNativeNotificationChannels = async () => {
       lightColor: '#2563EB',
     });
 
-    // 3. Register Native Action Listener (User taps notification in Android status bar)
+    // 3. Register Native Action Listener for LocalNotifications
     await LocalNotifications.addListener('localNotificationActionPerformed', (notificationAction) => {
       const extraData = notificationAction.notification.extra || {};
       console.log('User tapped native notification:', notificationAction, extraData);
-      
-      actionHandlers.forEach((handler) => {
-        try {
-          handler(extraData);
-        } catch (e) {
-          console.warn('Error executing notification action handler:', e);
-        }
-      });
+      triggerActionHandlers(extraData);
     });
 
     nativeChannelsInitialized = true;
@@ -93,6 +123,15 @@ export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | n
     const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
     swRegistration = reg;
     console.log('Connexa Service Worker registered with scope:', reg.scope);
+
+    // Listen for messages from sw.js when user clicks notification
+    navigator.serviceWorker.addEventListener('message', (event) => {
+      if (event.data?.type === 'NOTIFICATION_CLICK') {
+        console.log('Service Worker forwarded notification click:', event.data.payload);
+        triggerActionHandlers(event.data.payload || {});
+      }
+    });
+
     return reg;
   } catch (err) {
     console.warn('Service Worker registration warning:', err);
@@ -100,13 +139,130 @@ export const initServiceWorker = async (): Promise<ServiceWorkerRegistration | n
   }
 };
 
-export const isInIframe = (): boolean => {
-  if (isNativePlatform()) return false;
-  if (typeof window === 'undefined') return false;
+// Initialize Background Push Notifications (FCM for Android APK & Web Push for Browsers)
+export const initPushNotifications = async (currentUid: string) => {
+  if (!currentUid) return;
+
+  // A. Native Android APK Push Notifications (FCM)
+  if (isNativePlatform()) {
+    try {
+      await initNativeNotificationChannels();
+
+      const permStatus = await PushNotifications.checkPermissions();
+      let granted = permStatus.receive === 'granted';
+
+      if (!granted) {
+        const req = await PushNotifications.requestPermissions();
+        granted = req.receive === 'granted';
+      }
+
+      if (granted) {
+        if (!pushListenersRegistered) {
+          // 1. Listen for device registration and store FCM token in Firestore
+          await PushNotifications.addListener('registration', async (token: Token) => {
+            console.log('✅ FCM Push Registration Token received:', token.value);
+            await saveUserPushToken(currentUid, token.value, 'android');
+          });
+
+          // 2. Listen for registration errors
+          await PushNotifications.addListener('registrationError', (err) => {
+            console.warn('FCM Registration error:', err);
+          });
+
+          // 3. Listen for foreground push notifications
+          await PushNotifications.addListener('pushNotificationReceived', (notification: PushNotificationSchema) => {
+            console.log('FCM Push notification received in foreground:', notification);
+            playNotificationSound('message');
+            try {
+              Haptics.notification({ type: NotificationType.Success });
+            } catch (e) {
+              // Ignore
+            }
+          });
+
+          // 4. Listen for user clicking notification in status bar while app was closed / backgrounded
+          await PushNotifications.addListener('pushNotificationActionPerformed', (action: ActionPerformed) => {
+            console.log('User tapped FCM notification action:', action);
+            const extraData = action.notification.data || {};
+            triggerActionHandlers(extraData);
+          });
+
+          pushListenersRegistered = true;
+        }
+
+        // Register with Apple / Google Push Service
+        await PushNotifications.register();
+      }
+    } catch (nativePushErr) {
+      console.warn('Capacitor PushNotifications setup warning:', nativePushErr);
+    }
+    return;
+  }
+
+  // B. Web / PWA Push Notifications (PushManager + VAPID)
+  if (typeof window !== 'undefined' && 'serviceWorker' in navigator && 'PushManager' in window) {
+    try {
+      const reg = await initServiceWorker();
+      if (!reg) return;
+
+      if (Notification.permission === 'granted') {
+        // Fetch VAPID public key from backend server
+        const resp = await fetch('/api/vapid-public-key').catch(() => null);
+        if (!resp || !resp.ok) return;
+
+        const { publicKey } = await resp.json();
+        if (!publicKey) return;
+
+        let subscription = await reg.pushManager.getSubscription();
+        if (!subscription) {
+          subscription = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(publicKey)
+          });
+        }
+
+        if (subscription) {
+          await saveUserPushSubscription(currentUid, subscription);
+        }
+      }
+    } catch (webPushErr) {
+      console.warn('Web Push registration warning:', webPushErr);
+    }
+  }
+};
+
+// Dispatches a server-side push notification that delivers even when recipient's app is closed
+export const dispatchBackgroundPushNotification = async (params: {
+  recipientUids: string[];
+  title: string;
+  body: string;
+  icon?: string;
+  badge?: string;
+  data?: NotificationActionPayload;
+  recipientTokens?: string[];
+  recipientSubscriptions?: any[];
+}): Promise<void> => {
+  if (!params.recipientUids || params.recipientUids.length === 0) return;
+
   try {
-    return window.self !== window.top;
-  } catch (e) {
-    return true;
+    await fetch('/api/send-push', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        recipientUids: params.recipientUids,
+        title: params.title,
+        body: params.body,
+        icon: params.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+        badge: params.badge || params.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+        data: params.data || {},
+        recipientTokens: params.recipientTokens || [],
+        recipientSubscriptions: params.recipientSubscriptions || []
+      })
+    });
+  } catch (err) {
+    console.warn('Could not dispatch background push notification:', err);
   }
 };
 
@@ -128,21 +284,23 @@ export const getNotificationPermission = async (): Promise<NotificationPermissio
   return Notification.permission as NotificationPermissionState;
 };
 
-export const requestNotificationPermission = async (): Promise<NotificationPermissionState> => {
+export const requestNotificationPermission = async (userId?: string): Promise<NotificationPermissionState> => {
   // 1. Native Android Permissions via Capacitor
   if (isNativePlatform()) {
     try {
       await initNativeNotificationChannels();
       const check = await LocalNotifications.checkPermissions();
-      if (check.display === 'granted') {
-        return 'granted';
+      let granted = check.display === 'granted';
+
+      if (!granted) {
+        const req = await LocalNotifications.requestPermissions();
+        granted = req.display === 'granted';
       }
 
-      const req = await LocalNotifications.requestPermissions();
-      if (req.display === 'granted') {
-        await initNativeNotificationChannels();
+      if (granted && userId) {
+        await initPushNotifications(userId);
         return 'granted';
-      } else if (req.display === 'denied') {
+      } else if (check.display === 'denied') {
         return 'denied';
       }
       return 'default';
@@ -166,9 +324,12 @@ export const requestNotificationPermission = async (): Promise<NotificationPermi
       }
       currentPerm = await Notification.requestPermission();
     }
-    
+
     if (currentPerm === 'granted') {
       await initServiceWorker();
+      if (userId) {
+        await initPushNotifications(userId);
+      }
     }
     return currentPerm as NotificationPermissionState;
   } catch (err) {
@@ -194,7 +355,6 @@ export const showWebNotification = async (
       await initNativeNotificationChannels();
       const notifId = Math.floor((Date.now() % 1000000) + Math.random() * 900);
 
-      // Trigger native tactile haptic feedback
       try {
         await Haptics.notification({ type: NotificationType.Success });
       } catch (hapticErr) {
@@ -373,12 +533,12 @@ export const playNotificationSound = (type: 'message' | 'request' | 'group' | 'a
 
 export const playNotificationChime = playNotificationSound;
 
-export const testNotification = async () => {
-  const perm = await requestNotificationPermission();
+export const testNotification = async (currentUid?: string) => {
+  const perm = await requestNotificationPermission(currentUid);
   playNotificationSound('accepted');
   if (perm === 'granted') {
     showWebNotification('Connexa Real-Time Alerts 🔔', {
-      body: 'Real-time notifications are enabled & active on your phone!',
+      body: 'Background push & real-time notifications are enabled & active on your device!',
       icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa-test',
       channelId: 'connexa_messages_channel'
     });

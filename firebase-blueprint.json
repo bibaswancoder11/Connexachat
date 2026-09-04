@@ -11,7 +11,9 @@
         "bio": { "type": "string", "description": "User bio or tagline" },
         "status": { "type": "string", "description": "Online status: online, offline, away" },
         "lastSeen": { "type": "timestamp", "description": "Last activity timestamp" },
-        "createdAt": { "type": "timestamp", "description": "Account creation time" }
+        "createdAt": { "type": "timestamp", "description": "Account creation time" },
+        "pushTokens": { "type": "map", "description": "Map of FCM Android device push tokens" },
+        "pushSubscriptions": { "type": "map", "description": "Map of Web Push browser subscriptions" }
       }
     },
     "usernames": {
@@ -69,6 +71,26 @@
         "reactions": { "type": "map", "description": "Reactions map { [uid]: emoji }" },
         "timestamp": { "type": "timestamp", "description": "Message sent timestamp" },
         "readBy": { "type": "array", "description": "Array of user IDs who read the message" }
+      }
+    },
+    "calls": {
+      "fields": {
+        "id": { "type": "string", "description": "Unique call session ID" },
+        "chatId": { "type": "string", "description": "Associated chat ID" },
+        "type": { "type": "string", "description": "Call type: audio or video" },
+        "callerUid": { "type": "string", "description": "UID of the caller" },
+        "callerName": { "type": "string", "description": "Display name of the caller" },
+        "callerAvatar": { "type": "string", "description": "Avatar photo URL of caller" },
+        "recipientUid": { "type": "string", "description": "UID of the recipient" },
+        "recipientName": { "type": "string", "description": "Display name of the recipient" },
+        "recipientAvatar": { "type": "string", "description": "Avatar photo URL of recipient" },
+        "status": { "type": "string", "description": "Call status: ringing, connected, rejected, ended, missed" },
+        "offer": { "type": "map", "description": "WebRTC offer SDP description" },
+        "answer": { "type": "map", "description": "WebRTC answer SDP description" },
+        "createdAt": { "type": "timestamp", "description": "Call initiation timestamp" },
+        "connectedAt": { "type": "timestamp", "description": "Call answer/connection timestamp" },
+        "endedAt": { "type": "timestamp", "description": "Call completion timestamp" },
+        "durationSeconds": { "type": "number", "description": "Total call duration in seconds" }
       }
     }
   }

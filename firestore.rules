@@ -29,6 +29,18 @@ service cloud.firestore {
         allow read, write: if true;
       }
     }
+
+    match /calls/{callId} {
+      allow read, write: if true;
+
+      match /callerCandidates/{candidateId} {
+        allow read, write: if true;
+      }
+
+      match /recipientCandidates/{candidateId} {
+        allow read, write: if true;
+      }
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "Connexa",
-  "description": "Real-time chat application featuring Firebase authentication, real-time push & sound notifications for incoming messages and friend request acceptances, user profiles, unique user handles, user search, media sharing, and group chats.",
-  "requestFramePermissions": ["notifications", "camera", "microphone"],
+  "description": "Real-time messenger featuring free peer-to-peer audio and video calling, background push notifications, media sharing, and group chats.",
+  "requestFramePermissions": ["camera", "microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

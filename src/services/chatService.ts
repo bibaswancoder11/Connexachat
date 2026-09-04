@@ -21,6 +21,7 @@ import { db } from '../firebase';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
 import { getFriendshipId } from './friendService';
 import { getUserProfile, saveLocalRegisteredAccount } from './userService';
+import { dispatchBackgroundPushNotification } from './notificationService';
 
 export const getOrCreateChat = async (uid1: string, uid2: string): Promise<string> => {
   const chatId = getFriendshipId(uid1, uid2);
@@ -103,6 +104,22 @@ export const createGroupChat = async (
     timestamp: serverTimestamp(),
     readBy: [creatorProfile.uid]
   });
+
+  // Dispatch background push notification to all invited group members
+  const invitedRecipients = allMembers.filter(uid => uid !== creatorProfile.uid);
+  if (invitedRecipients.length > 0) {
+    dispatchBackgroundPushNotification({
+      recipientUids: invitedRecipients,
+      title: `🎉 ${groupName}`,
+      body: `${creatorProfile.displayName} added you to group "${groupName}"`,
+      icon: avatarUrl,
+      data: {
+        chatId,
+        type: 'group_created',
+        senderId: creatorProfile.uid
+      }
+    }).catch(e => console.warn('Group creation push dispatch warning:', e));
+  }
 
   return chatId;
 };
@@ -391,6 +408,31 @@ export const sendMessage = async (
       updatedAt: serverTimestamp(),
       ...unreadUpdates
     });
+
+    // Real-Time Background Push Notification dispatch (FCM on Android / Web Push on Web)
+    // Ensures notifications reach recipient's device even if the app or browser tab is closed
+    if (recipients.length > 0) {
+      const senderDisplayName = senderProfile?.displayName || 'Someone';
+      const notificationTitle = chatData.isGroup 
+        ? `💬 ${chatData.groupName || 'Group Chat'}` 
+        : senderDisplayName;
+      const notificationBody = chatData.isGroup 
+        ? `${senderDisplayName}: ${previewText}` 
+        : previewText;
+
+      dispatchBackgroundPushNotification({
+        recipientUids: recipients,
+        title: notificationTitle,
+        body: notificationBody,
+        icon: senderProfile?.photoURL || chatData.groupAvatar,
+        data: {
+          chatId,
+          type: 'message',
+          senderId,
+          senderName: senderDisplayName
+        }
+      }).catch(e => console.warn('Background push notification dispatch warning:', e));
+    }
   }
 };
 
@@ -453,10 +495,7 @@ export const toggleMessageReaction = async (
   }
 };
 
-export const deleteMessage = async (chatId: string, messageId: string): Promise<void> => {
-  const msgRef = doc(db, 'chats', chatId, 'messages', messageId);
-  await deleteDoc(msgRef);
-
+export const refreshChatLastMessage = async (chatId: string): Promise<void> => {
   try {
     const messagesRef = collection(db, 'chats', chatId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(1));
@@ -465,7 +504,7 @@ export const deleteMessage = async (chatId: string, messageId: string): Promise<
     const chatRef = doc(db, 'chats', chatId);
     if (!snap.empty) {
       const lastMsg = snap.docs[0].data() as ChatMessage;
-      let previewText = lastMsg.text;
+      let previewText = lastMsg.text || 'Attachment';
       if (lastMsg.type === 'image') previewText = '📷 Photo';
       if (lastMsg.type === 'video') previewText = '🎥 Video';
       if (lastMsg.type === 'audio') previewText = '🎤 Voice Note';
@@ -487,4 +526,105 @@ export const deleteMessage = async (chatId: string, messageId: string): Promise<
     console.warn('Error updating last message after delete:', err);
   }
 };
+
+export const deleteMessageForEveryone = async (
+  chatId: string, 
+  messageId: string, 
+  callId?: string
+): Promise<void> => {
+  const msgRef = doc(db, 'chats', chatId, 'messages', messageId);
+  await deleteDoc(msgRef);
+
+  if (callId) {
+    try {
+      await deleteDoc(doc(db, 'calls', callId));
+    } catch (e) {
+      // Non-blocking cleanup
+    }
+  }
+
+  await refreshChatLastMessage(chatId);
+};
+
+export const deleteMessageForMe = async (
+  chatId: string,
+  messageId: string,
+  currentUid: string,
+  chatParticipants: string[] = []
+): Promise<void> => {
+  const msgRef = doc(db, 'chats', chatId, 'messages', messageId);
+  const snap = await getDoc(msgRef);
+  if (!snap.exists()) return;
+
+  const data = snap.data() as ChatMessage;
+  const currentDeletedFor = data.deletedFor || [];
+  const updatedDeletedFor = Array.from(new Set([...currentDeletedFor, currentUid]));
+
+  // If all participants have deleted this message for themselves, purge the document completely
+  const allDeleted = chatParticipants.length > 0 && chatParticipants.every(p => updatedDeletedFor.includes(p));
+  if (allDeleted) {
+    await deleteDoc(msgRef);
+    if (data.callId) {
+      try {
+        await deleteDoc(doc(db, 'calls', data.callId));
+      } catch (e) {
+        // ignore
+      }
+    }
+    await refreshChatLastMessage(chatId);
+    return;
+  }
+
+  await updateDoc(msgRef, {
+    deletedFor: arrayUnion(currentUid)
+  });
+};
+
+export const clearAllCallLogsInChat = async (
+  chatId: string,
+  currentUid: string,
+  mode: 'both' | 'me',
+  chatParticipants: string[] = []
+): Promise<number> => {
+  const messagesRef = collection(db, 'chats', chatId, 'messages');
+  const snap = await getDocs(messagesRef);
+  let count = 0;
+
+  for (const docSnap of snap.docs) {
+    const data = docSnap.data() as ChatMessage;
+    const isCallMsg = data.isCallLog || (data.type === 'system' && (data.text?.includes('📞') || data.text?.includes('📹')));
+    if (isCallMsg) {
+      count++;
+      if (mode === 'both') {
+        await deleteDoc(docSnap.ref);
+        if (data.callId) {
+          try {
+            await deleteDoc(doc(db, 'calls', data.callId));
+          } catch (e) {
+            // ignore
+          }
+        }
+      } else {
+        const currentDeletedFor = data.deletedFor || [];
+        const updatedDeletedFor = Array.from(new Set([...currentDeletedFor, currentUid]));
+        const allDeleted = chatParticipants.length > 0 && chatParticipants.every(p => updatedDeletedFor.includes(p));
+        if (allDeleted) {
+          await deleteDoc(docSnap.ref);
+        } else {
+          await updateDoc(docSnap.ref, {
+            deletedFor: arrayUnion(currentUid)
+          });
+        }
+      }
+    }
+  }
+
+  await refreshChatLastMessage(chatId);
+  return count;
+};
+
+export const deleteMessage = async (chatId: string, messageId: string): Promise<void> => {
+  await deleteMessageForEveryone(chatId, messageId);
+};
+
 

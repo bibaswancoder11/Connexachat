@@ -31,7 +31,9 @@ import {
   Unlock,
   AlertTriangle,
   Camera,
-  Film
+  Film,
+  Phone,
+  PhoneCall
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
@@ -50,7 +52,10 @@ import {
   markChatAsRead, 
   setTypingIndicator, 
   toggleMessageReaction, 
-  deleteMessage 
+  deleteMessage,
+  deleteMessageForEveryone,
+  deleteMessageForMe,
+  clearAllCallLogsInChat
 } from '../services/chatService';
 import { 
   isUserBlockedLocally, 
@@ -70,6 +75,7 @@ interface ChatViewProps {
   chats?: ChatRoom[];
   onGroupLeft?: () => void;
   onBackToChats?: () => void;
+  onStartCall?: (type: 'audio' | 'video') => void;
 }
 
 const EMOJI_REACTIONS = ['❤️', '👍', '😂', '🔥', '😮'];
@@ -79,7 +85,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   friends, 
   chats = [], 
   onGroupLeft, 
-  onBackToChats 
+  onBackToChats,
+  onStartCall
 }) => {
   const { userProfile } = useAuth();
   const isGroup = chat.isGroup;
@@ -118,7 +125,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
   const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
   const [showShareMediaModal, setShowShareMediaModal] = useState(false);
-  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{ id: string; text: string } | null>(null);
+  const [confirmDeleteModal, setConfirmDeleteModal] = useState<{ 
+    id: string; 
+    text: string; 
+    isCallLog?: boolean; 
+    callId?: string; 
+    canDeleteForEveryone?: boolean; 
+  } | null>(null);
+  const [showClearCallLogsModal, setShowClearCallLogsModal] = useState(false);
+  const [isClearingCallLogs, setIsClearingCallLogs] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
 
@@ -442,6 +457,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   }
 
+  // Filter messages hidden for current user (delete for me)
+  const visibleMessages = messages.filter(msg => {
+    if (!userProfile) return true;
+    if (msg.deletedFor && msg.deletedFor.includes(userProfile.uid)) {
+      return false;
+    }
+    return true;
+  });
+
+  const handleDeleteForEveryone = async () => {
+    if (!chat.id || !confirmDeleteModal) return;
+    setIsDeleting(true);
+    try {
+      await deleteMessageForEveryone(chat.id, confirmDeleteModal.id, confirmDeleteModal.callId);
+    } catch (err) {
+      console.error('Error deleting message for everyone:', err);
+    } finally {
+      setIsDeleting(false);
+      setConfirmDeleteModal(null);
+    }
+  };
+
+  const handleDeleteForMe = async () => {
+    if (!chat.id || !confirmDeleteModal || !userProfile) return;
+    setIsDeleting(true);
+    try {
+      await deleteMessageForMe(chat.id, confirmDeleteModal.id, userProfile.uid, chat.participants || []);
+    } catch (err) {
+      console.error('Error deleting message for me:', err);
+    } finally {
+      setIsDeleting(false);
+      setConfirmDeleteModal(null);
+    }
+  };
+
+  const handleClearCallLogs = async (mode: 'both' | 'me') => {
+    if (!chat.id || !userProfile) return;
+    setIsClearingCallLogs(true);
+    try {
+      await clearAllCallLogsInChat(chat.id, userProfile.uid, mode, chat.participants || []);
+    } catch (err) {
+      console.error('Error clearing call logs:', err);
+    } finally {
+      setIsClearingCallLogs(false);
+      setShowClearCallLogsModal(false);
+    }
+  };
+
   const title = isGroup ? (chat.groupName || 'Group Chat') : (otherUser?.displayName || 'Friend');
   const avatarUrl = isGroup
     ? (chat.groupAvatar || `https://api.dicebear.com/7.x/identicon/svg?seed=${chat.id}`)
@@ -531,6 +594,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {/* Action icons */}
         <div className="flex items-center gap-1 relative">
+          {/* 1-on-1 Free WebRTC Calling Buttons (Voice & Video) */}
+          {!isGroup && otherUser && !isBlocked && (
+            <>
+              <button
+                type="button"
+                onClick={() => onStartCall?.('audio')}
+                className="p-2 text-slate-600 hover:text-emerald-600 dark:text-slate-300 dark:hover:text-emerald-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                title="Voice Call (Free P2P)"
+              >
+                <Phone className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onStartCall?.('video')}
+                className="p-2 text-slate-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                title="Video Call (Free P2P)"
+              >
+                <VideoIcon className="w-4 h-4" />
+              </button>
+            </>
+          )}
+
           {/* Share Media across friends/groups button */}
           <button
             type="button"
@@ -542,13 +628,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </button>
 
           {isGroup ? (
-            <button
-              onClick={() => setShowGroupInfoModal(true)}
-              className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold"
-            >
-              <Info className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              <span className="hidden sm:inline">Group Info</span>
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setShowGroupInfoModal(true)}
+                className="p-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl transition-all flex items-center gap-1.5 text-xs font-semibold"
+              >
+                <Info className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span className="hidden sm:inline">Group Info</span>
+              </button>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowHeaderMenu(!showHeaderMenu)}
+                  className="p-2 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  title="Group Options"
+                >
+                  <MoreVertical className="w-5 h-5" />
+                </button>
+
+                {showHeaderMenu && (
+                  <div 
+                    className="absolute right-0 top-full mt-1.5 w-48 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-1.5 z-30 animate-in fade-in slide-in-from-top-1 duration-150"
+                    onClick={() => setShowHeaderMenu(false)}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setShowShareMediaModal(true)}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-xl transition-colors"
+                    >
+                      <Share2 className="w-4 h-4 text-blue-500" />
+                      <span>Share Photos/Videos</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowHeaderMenu(false);
+                        setShowClearCallLogsModal(true);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4 text-rose-500" />
+                      <span>Clear Call Logs</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           ) : (
             <div className="relative">
               <button
@@ -596,6 +723,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <Share2 className="w-4 h-4 text-blue-500" />
                     <span>Share Photos/Videos</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowHeaderMenu(false);
+                      setShowClearCallLogsModal(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4 text-rose-500" />
+                    <span>Clear Call Logs</span>
+                  </button>
                 </div>
               )}
             </div>
@@ -605,7 +744,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Message Stream */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4">
-        {messages.length === 0 ? (
+        {visibleMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-8 space-y-3">
             <div className="p-4 bg-blue-100 dark:bg-blue-950/60 rounded-3xl text-blue-600 dark:text-blue-400">
               <Smile className="w-8 h-8" />
@@ -620,13 +759,60 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </p>
           </div>
         ) : (
-          messages.map((msg) => {
+          visibleMessages.map((msg) => {
             if (msg.type === 'system') {
+              const isCallMsg = Boolean(msg.isCallLog || msg.text?.includes('📞') || msg.text?.includes('📹'));
+              const isVideoCall = Boolean(msg.callType === 'video' || msg.text?.includes('📹'));
+              const isMissed = Boolean(msg.text?.toLowerCase().includes('missed') || msg.callStatus === 'missed');
+              const isDeclined = Boolean(msg.text?.toLowerCase().includes('declined') || msg.callStatus === 'rejected');
+
               return (
-                <div key={msg.id} className="flex justify-center my-2">
-                  <span className="px-3 py-1 bg-slate-200/70 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 text-[11px] font-medium rounded-full border border-slate-300/50 dark:border-slate-700/50 shadow-2xs">
-                    {msg.text}
-                  </span>
+                <div key={msg.id} className="flex justify-center my-2.5 group relative">
+                  <div className={`px-3.5 py-1.5 text-[11px] font-medium rounded-full border shadow-2xs flex items-center gap-2 transition-all ${
+                    isCallMsg
+                      ? isMissed || isDeclined
+                        ? 'bg-rose-50 dark:bg-rose-950/40 text-rose-800 dark:text-rose-300 border-rose-200/80 dark:border-rose-900/60'
+                        : 'bg-blue-50 dark:bg-blue-950/40 text-blue-800 dark:text-blue-300 border-blue-200/80 dark:border-blue-800/80'
+                      : 'bg-slate-200/70 dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 border-slate-300/50 dark:border-slate-700/50'
+                  }`}>
+                    <span className="flex items-center gap-1.5">
+                      <span>{msg.text}</span>
+                      {msg.timestamp && (
+                        <span className="text-[10px] opacity-60 ml-0.5">{formatTimestamp(msg.timestamp)}</span>
+                      )}
+                    </span>
+
+                    {isCallMsg && !isGroup && otherUser && !isBlocked && (
+                      <button
+                        type="button"
+                        onClick={() => onStartCall?.(isVideoCall ? 'video' : 'audio')}
+                        className="font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 border-l border-blue-200 dark:border-blue-800/80 pl-2 ml-1"
+                        title="Call back"
+                      >
+                        {isVideoCall ? <VideoIcon className="w-3 h-3" /> : <Phone className="w-3 h-3" />}
+                        <span>Call back</span>
+                      </button>
+                    )}
+
+                    {/* Delete Call Log button (accessible to BOTH caller and recipient / both sides) */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteModal({
+                          id: msg.id,
+                          text: msg.text,
+                          isCallLog: isCallMsg,
+                          callId: msg.callId,
+                          canDeleteForEveryone: true // Both caller and recipient can delete from both sides!
+                        });
+                      }}
+                      className="opacity-70 hover:opacity-100 p-1 hover:bg-rose-100 dark:hover:bg-rose-900/50 rounded-full text-slate-400 hover:text-rose-600 dark:text-slate-400 dark:hover:text-rose-400 transition-all ml-1 border-l border-slate-200/80 dark:border-slate-700/80 pl-1.5"
+                      title={isCallMsg ? "Delete call log (both sides or for me)" : "Delete log"}
+                    >
+                      <Trash2 className="w-3 h-3" />
+                    </button>
+                  </div>
                 </div>
               );
             }
@@ -807,22 +993,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     )}
 
                     {/* Delete Button */}
-                    {canDelete && (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setConfirmDeleteModal({
-                            id: msg.id,
-                            text: msg.text || (msg.type === 'image' ? 'Photo attachment' : msg.type === 'video' ? 'Video clip' : msg.type === 'audio' ? 'Voice note' : 'Message')
-                          });
-                        }}
-                        className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                        title={isMe ? "Delete your message" : "Delete message (Group Admin)"}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteModal({
+                          id: msg.id,
+                          text: msg.text || (msg.type === 'image' ? 'Photo attachment' : msg.type === 'video' ? 'Video clip' : msg.type === 'audio' ? 'Voice note' : 'Message'),
+                          isCallLog: false,
+                          canDeleteForEveryone: canDelete
+                        });
+                      }}
+                      className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+                      title={canDelete ? "Delete message (everyone or for me)" : "Delete message (for me)"}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
 
@@ -1260,18 +1446,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* Delete Message Confirmation Modal */}
+      {/* Delete Message / Call Log Confirmation Modal */}
       {confirmDeleteModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
             <div className="flex items-center gap-3">
-              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400">
-                <Trash2 className="w-6 h-6" />
+              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400 shrink-0">
+                {confirmDeleteModal.isCallLog ? <Phone className="w-6 h-6" /> : <Trash2 className="w-6 h-6" />}
               </div>
               <div>
-                <h3 className="font-bold text-base text-slate-900 dark:text-white">Delete Message?</h3>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">
+                  {confirmDeleteModal.isCallLog ? 'Delete Call Log?' : 'Delete Message?'}
+                </h3>
                 <p className="text-xs text-slate-500 dark:text-slate-400">
-                  This message will be permanently deleted for everyone in this chat.
+                  {confirmDeleteModal.isCallLog
+                    ? 'Delete this call log from both sides (everyone) or only for yourself.'
+                    : 'Choose how you want to delete this message.'}
                 </p>
               </div>
             </div>
@@ -1282,33 +1472,94 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             )}
 
-            <div className="flex items-center justify-end gap-2 pt-2">
+            <div className="flex flex-col gap-2 pt-2">
+              {confirmDeleteModal.canDeleteForEveryone && (
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={handleDeleteForEveryone}
+                  className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>
+                    {isDeleting 
+                      ? 'Deleting...' 
+                      : confirmDeleteModal.isCallLog 
+                        ? 'Delete for Everyone (Both Sides)' 
+                        : 'Delete for Everyone'}
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteForMe}
+                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span>Delete for Me Only</span>
+              </button>
+
               <button
                 type="button"
                 disabled={isDeleting}
                 onClick={() => setConfirmDeleteModal(null)}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                className="w-full px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
               >
                 Cancel
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Clear All Call Logs Confirmation Modal */}
+      {showClearCallLogsModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400 shrink-0">
+                <Phone className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="font-bold text-base text-slate-900 dark:text-white">Clear All Call Logs?</h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Delete all voice and video call records in this chat.
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3 bg-slate-50 dark:bg-slate-800/80 rounded-2xl border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 space-y-1">
+              <p>You can clear call history for both sides (everyone in chat) or only on your device.</p>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2">
               <button
                 type="button"
-                disabled={isDeleting}
-                onClick={async () => {
-                  if (!chat.id) return;
-                  setIsDeleting(true);
-                  try {
-                    await deleteMessage(chat.id, confirmDeleteModal.id);
-                  } catch (err) {
-                    console.error('Error deleting message:', err);
-                  } finally {
-                    setIsDeleting(false);
-                    setConfirmDeleteModal(null);
-                  }
-                }}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50"
+                disabled={isClearingCallLogs}
+                onClick={() => handleClearCallLogs('both')}
+                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
               >
-                {isDeleting ? 'Deleting...' : 'Delete for Everyone'}
+                <Trash2 className="w-4 h-4" />
+                <span>{isClearingCallLogs ? 'Clearing...' : 'Clear for Both Sides (Everyone)'}</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isClearingCallLogs}
+                onClick={() => handleClearCallLogs('me')}
+                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <span>Clear for Me Only</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isClearingCallLogs}
+                onClick={() => setShowClearCallLogsModal(false)}
+                className="w-full px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+              >
+                Cancel
               </button>
             </div>
           </div>

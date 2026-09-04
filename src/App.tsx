@@ -12,11 +12,20 @@ import { NotificationToast, ToastNotificationData } from './components/Notificat
 import { ChatRoom, FriendRequest, UserProfile } from './types';
 import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
-import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, onNotificationAction } from './services/notificationService';
+import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, initPushNotifications, onNotificationAction } from './services/notificationService';
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 import { ShareMediaModal, SharedMediaItem } from './components/ShareMediaModal';
 import { initShareTargetListener, subscribeToShareIntents } from './utils/apkIntentHandler';
+import { IncomingCallBanner } from './components/IncomingCallBanner';
+import { CallModal } from './components/CallModal';
+import { CallSession, CallType } from './types';
+import { 
+  initiateCall, 
+  subscribeToIncomingCalls, 
+  rejectCallSession, 
+  logCallInChat 
+} from './services/callService';
 
 const ConnexaApp: React.FC = () => {
   const { currentUser, userProfile, loading } = useAuth();
@@ -33,6 +42,11 @@ const ConnexaApp: React.FC = () => {
   const [sharedMediaPayload, setSharedMediaPayload] = useState<{ items: SharedMediaItem[]; text?: string } | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
+  // Calling States (Free WebRTC Peer-to-Peer Calls)
+  const [incomingCall, setIncomingCall] = useState<CallSession | null>(null);
+  const [activeCallSession, setActiveCallSession] = useState<CallSession | null>(null);
+  const [isCallInitiator, setIsCallInitiator] = useState<boolean>(false);
+
   // Keep track of previous states and notified IDs to trigger notifications reliably without duplicates
   const prevChatsMapRef = useRef<Map<string, ChatRoom>>(new Map());
   const isFirstChatsLoadRef = useRef<boolean>(true);
@@ -42,11 +56,25 @@ const ConnexaApp: React.FC = () => {
   const knownFriendUidsRef = useRef<Set<string> | null>(null);
   const knownIncomingReqIdsRef = useRef<Set<string> | null>(null);
 
-  // Ask for Push Notification permission & register Service Worker on load
+  // Ask for Push Notification permission & register FCM & Web Push on login
   useEffect(() => {
     if (currentUser) {
-      requestNotificationPermission();
+      requestNotificationPermission(currentUser.uid);
+      initPushNotifications(currentUser.uid);
       initServiceWorker();
+
+      // Check if launched via notification click query parameter ?chatId=...
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const urlChatId = urlParams.get('chatId');
+        if (urlChatId) {
+          setActiveChatId(urlChatId);
+          setActiveTab('chats');
+        }
+      } catch (e) {
+        // ignore
+      }
+
       try {
         localStorage.setItem('connexa_last_uid', currentUser.uid);
       } catch (e) {
@@ -100,6 +128,21 @@ const ConnexaApp: React.FC = () => {
       };
     }
   }, [currentUser]);
+
+  // Listen for real-time incoming WebRTC calls for the logged-in user
+  useEffect(() => {
+    if (!currentUser?.uid) return;
+
+    const unsubCalls = subscribeToIncomingCalls(currentUser.uid, (call) => {
+      // If user is already on an active call, ignore new incoming call
+      if (activeCallSession) return;
+      setIncomingCall(call);
+    });
+
+    return () => {
+      unsubCalls();
+    };
+  }, [currentUser?.uid, activeCallSession]);
 
   // Update Browser Document Title badge with unread messages + requests count
   useEffect(() => {
@@ -354,6 +397,82 @@ const ConnexaApp: React.FC = () => {
     }
   };
 
+  // Initiate Free WhatsApp-style Call
+  const handleStartCall = async (chat: ChatRoom, type: CallType) => {
+    if (!userProfile) return;
+    if (chat.isGroup) {
+      setToastNotification({
+        title: 'Group Calling',
+        message: 'Group calling will be available soon! You can call individual friends 1-on-1 for free.',
+        type: 'system'
+      });
+      return;
+    }
+    if (!chat.otherUser) {
+      setToastNotification({
+        title: 'Call Alert',
+        message: 'Recipient user profile is unavailable.',
+        type: 'system'
+      });
+      return;
+    }
+    if (activeCallSession) {
+      setToastNotification({
+        title: 'Active Call',
+        message: 'You are already on an active call.',
+        type: 'system'
+      });
+      return;
+    }
+
+    try {
+      const callId = await initiateCall({
+        chatId: chat.id,
+        type,
+        callerProfile: userProfile,
+        recipientProfile: chat.otherUser
+      });
+
+      setActiveCallSession({
+        id: callId,
+        chatId: chat.id,
+        type,
+        callerUid: userProfile.uid,
+        callerName: userProfile.displayName || userProfile.username,
+        callerAvatar: userProfile.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${userProfile.uid}`,
+        recipientUid: chat.otherUser.uid,
+        recipientName: chat.otherUser.displayName || chat.otherUser.username,
+        recipientAvatar: chat.otherUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${chat.otherUser.uid}`,
+        status: 'ringing',
+        createdAt: Date.now()
+      });
+      setIsCallInitiator(true);
+    } catch (err: any) {
+      console.warn('Call initiation error:', err);
+      setToastNotification({
+        title: 'Call Initialization',
+        message: err?.message || 'Could not initiate call. Please ensure microphone permissions are allowed.',
+        type: 'system'
+      });
+    }
+  };
+
+  const handleAcceptCall = (call: CallSession) => {
+    setIncomingCall(null);
+    setActiveCallSession(call);
+    setIsCallInitiator(false);
+  };
+
+  const handleDeclineCall = async (call: CallSession) => {
+    setIncomingCall(null);
+    try {
+      await rejectCallSession(call.id);
+      await logCallInChat(call.chatId, call, 'rejected', 0);
+    } catch (e) {
+      console.warn('Error declining call:', e);
+    }
+  };
+
   const activeChat = chats.find(c => c.id === activeChatId);
 
   return (
@@ -404,6 +523,7 @@ const ConnexaApp: React.FC = () => {
                   onBackToChats={() => {
                     setActiveChatId(null);
                   }}
+                  onStartCall={(type) => handleStartCall(activeChat, type)}
                 />
               ) : (
                 <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
@@ -508,6 +628,25 @@ const ConnexaApp: React.FC = () => {
           toast={toastNotification}
           onClose={() => setToastNotification(null)}
         />
+
+        {/* Incoming Call Overlay (WhatsApp style ringing banner) */}
+        {incomingCall && (
+          <IncomingCallBanner
+            call={incomingCall}
+            onAccept={handleAcceptCall}
+            onDecline={handleDeclineCall}
+          />
+        )}
+
+        {/* Active Fullscreen/Floating WebRTC Call Modal */}
+        {activeCallSession && userProfile && (
+          <CallModal
+            call={activeCallSession}
+            currentUser={userProfile}
+            isInitiator={isCallInitiator}
+            onClose={() => setActiveCallSession(null)}
+          />
+        )}
       </div>
     </AvatarPreviewProvider>
   );
