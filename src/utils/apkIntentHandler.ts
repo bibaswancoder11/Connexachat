@@ -14,6 +14,13 @@ export interface PendingSharePayload {
   source?: 'android-share-sheet' | 'web-share-target' | 'file-drop';
 }
 
+export interface SharedLinkPayload {
+  url: string;
+  title?: string;
+  text?: string;
+  source?: 'android-share-sheet' | 'web-share-target' | 'query-param' | 'in-app';
+}
+
 type ShareIntentListener = (payload: PendingSharePayload) => void;
 const listeners: Set<ShareIntentListener> = new Set();
 
@@ -36,6 +43,43 @@ export function notifyShareIntent(payload: PendingSharePayload) {
   } else {
     listeners.forEach(l => l(payload));
   }
+}
+
+type LinkShareIntentListener = (payload: SharedLinkPayload) => void;
+const linkListeners: Set<LinkShareIntentListener> = new Set();
+let pendingLinkPayload: SharedLinkPayload | null = null;
+
+export function subscribeToLinkShareIntents(listener: LinkShareIntentListener): () => void {
+  linkListeners.add(listener);
+  if (pendingLinkPayload) {
+    listener(pendingLinkPayload);
+    pendingLinkPayload = null;
+  }
+  return () => {
+    linkListeners.delete(listener);
+  };
+}
+
+export function notifyLinkShareIntent(payload: SharedLinkPayload) {
+  if (linkListeners.size === 0) {
+    pendingLinkPayload = payload;
+  } else {
+    linkListeners.forEach(l => l(payload));
+  }
+}
+
+/**
+ * Extract URL and optional surrounding message caption from text
+ */
+export function extractUrlAndCaption(rawText: string): { url: string; caption: string } | null {
+  if (!rawText) return null;
+  const urlRegex = /(https?:\/\/[^\s]+)/i;
+  const match = rawText.match(urlRegex);
+  if (!match) return null;
+
+  const url = match[0];
+  const caption = rawText.replace(url, '').trim();
+  return { url, caption };
 }
 
 /**
@@ -78,7 +122,50 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
 export function initShareTargetListener() {
   if (typeof window === 'undefined') return;
 
-  // 1. Listen for Service Worker postMessage (Web Share Target / PWA / Android TWA)
+  // 1. Check URL query parameters (triggered by Web Share Target GET or Service Worker 303 Redirect)
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const sharedUrl = params.get('shared_url') || params.get('url') || params.get('link');
+    const sharedText = params.get('shared_text') || params.get('text');
+    const sharedTitle = params.get('shared_title') || params.get('title');
+
+    if (sharedUrl || sharedText) {
+      let finalUrl = sharedUrl || '';
+      let finalText = sharedText || '';
+
+      if (!finalUrl && sharedText) {
+        const extracted = extractUrlAndCaption(sharedText);
+        if (extracted) {
+          finalUrl = extracted.url;
+          finalText = extracted.caption;
+        }
+      }
+
+      if (finalUrl) {
+        // Clean URL to prevent re-opening on manual page refresh
+        const cleanUrl = new URL(window.location.href);
+        cleanUrl.searchParams.delete('shared_url');
+        cleanUrl.searchParams.delete('url');
+        cleanUrl.searchParams.delete('link');
+        cleanUrl.searchParams.delete('shared_text');
+        cleanUrl.searchParams.delete('text');
+        cleanUrl.searchParams.delete('shared_title');
+        cleanUrl.searchParams.delete('title');
+        window.history.replaceState({}, '', cleanUrl.pathname + (cleanUrl.searchParams.toString() ? '?' + cleanUrl.searchParams.toString() : ''));
+
+        notifyLinkShareIntent({
+          url: finalUrl,
+          title: sharedTitle || undefined,
+          text: finalText || undefined,
+          source: 'query-param'
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading share target search params:', err);
+  }
+
+  // 2. Listen for Service Worker postMessage (Web Share Target / PWA / Android TWA)
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', async (event) => {
       if (event.data?.type === 'WEB_SHARE_TARGET_MEDIA') {
@@ -93,11 +180,28 @@ export function initShareTargetListener() {
             });
           }
         }
+      } else if (event.data?.type === 'WEB_SHARE_TARGET_LINK') {
+        let { url, text, title } = event.data;
+        if (!url && text) {
+          const extracted = extractUrlAndCaption(text);
+          if (extracted) {
+            url = extracted.url;
+            text = extracted.caption;
+          }
+        }
+        if (url) {
+          notifyLinkShareIntent({
+            url,
+            title,
+            text,
+            source: 'web-share-target'
+          });
+        }
       }
     });
   }
 
-  // 2. Listen for custom Capacitor appUrlOpen or Android Intent message if dispatched
+  // 3. Listen for custom Capacitor appUrlOpen or Android Intent message if dispatched
   window.addEventListener('connexa:share-media', async (e: any) => {
     if (e.detail?.files) {
       const items = await processIncomingFilesForSharing(e.detail.files);
@@ -108,6 +212,18 @@ export function initShareTargetListener() {
           source: 'android-share-sheet'
         });
       }
+    }
+  });
+
+  // 4. Listen for custom link share event
+  window.addEventListener('connexa:share-link', (e: any) => {
+    if (e.detail?.url) {
+      notifyLinkShareIntent({
+        url: e.detail.url,
+        title: e.detail.title,
+        text: e.detail.text,
+        source: 'android-share-sheet'
+      });
     }
   });
 }

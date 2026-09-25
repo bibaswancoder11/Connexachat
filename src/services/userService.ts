@@ -3,6 +3,7 @@ import {
   getDoc, 
   setDoc, 
   updateDoc, 
+  deleteDoc,
   collection, 
   query, 
   getDocs, 
@@ -408,6 +409,85 @@ export const saveUserPushSubscription = async (
     console.log(`✅ Stored Web Push subscription for user ${uid}`);
   } catch (e) {
     console.warn('Could not save push subscription to Firestore:', e);
+  }
+};
+
+/**
+ * Permanently delete a user profile, releasing their username handle,
+ * removing friend relationships, and purging local storage account references.
+ */
+export const deleteUserProfile = async (uid: string): Promise<boolean> => {
+  if (!uid) return false;
+
+  try {
+    // 1. Fetch user doc to get username
+    let username = '';
+    const userDocRef = doc(db, 'users', uid);
+    try {
+      const userDocSnap = await getDoc(userDocRef);
+      if (userDocSnap.exists()) {
+        username = userDocSnap.data().username || '';
+      }
+    } catch (e) {
+      console.warn('Could not read user doc prior to deletion:', e);
+    }
+
+    if (!username) {
+      const localAcc = getLocalRegisteredAccounts().find(a => a.uid === uid);
+      if (localAcc) username = localAcc.username || '';
+    }
+
+    // 2. Delete user document from Firestore
+    await deleteDoc(userDocRef).catch(e => console.warn('Error deleting user doc:', e));
+
+    // 3. Delete username mapping from Firestore
+    if (username) {
+      const cleanUsername = username.toLowerCase().trim().replace(/[^a-z0-9_]/g, '');
+      if (cleanUsername) {
+        await deleteDoc(doc(db, 'usernames', cleanUsername)).catch(e => console.warn('Error releasing username:', e));
+      }
+    }
+
+    // 4. Remove friend requests involving this user
+    try {
+      const reqsRef = collection(db, 'friendRequests');
+      const qFrom = query(reqsRef, where('fromUid', '==', uid));
+      const snapFrom = await getDocs(qFrom);
+      snapFrom.forEach(d => deleteDoc(d.ref).catch(() => {}));
+
+      const qTo = query(reqsRef, where('toUid', '==', uid));
+      const snapTo = await getDocs(qTo);
+      snapTo.forEach(d => deleteDoc(d.ref).catch(() => {}));
+    } catch (e) {
+      console.warn('Could not clean friend requests during user deletion:', e);
+    }
+
+    // 5. Remove friendships involving this user
+    try {
+      const friendsRef = collection(db, 'friends');
+      const qFriends = query(friendsRef, where('users', 'array-contains', uid));
+      const snapFriends = await getDocs(qFriends);
+      snapFriends.forEach(d => deleteDoc(d.ref).catch(() => {}));
+    } catch (e) {
+      console.warn('Could not clean friendships during user deletion:', e);
+    }
+
+    // 6. Clean up local accounts cache and storage keys
+    try {
+      const localAccounts = getLocalRegisteredAccounts().filter(a => a.uid !== uid);
+      localStorage.setItem(ACCOUNTS_KEY, JSON.stringify(localAccounts));
+      if (localStorage.getItem('connexa_last_uid') === uid) {
+        localStorage.removeItem('connexa_last_uid');
+      }
+      localStorage.removeItem('connexa_demo_guest_session');
+    } catch (e) {
+      console.warn('Could not clean local storage on profile deletion:', e);
+    }
+
+    return true;
+  } catch (err) {
+    console.error('Error during deleteUserProfile:', err);
+    throw err;
   }
 };
 

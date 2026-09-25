@@ -21,7 +21,8 @@ import {
   updateUserPresence,
   subscribeToUserProfile,
   getLocalRegisteredAccounts,
-  saveLocalRegisteredAccount
+  saveLocalRegisteredAccount,
+  deleteUserProfile
 } from '../services/userService';
 
 interface AuthContextType {
@@ -34,6 +35,7 @@ interface AuthContextType {
   logout: () => Promise<void>;
   refreshProfile: () => Promise<void>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<void>;
+  deleteAccount: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -411,6 +413,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const deleteAccount = async () => {
+    const uidToDelete = currentUser?.uid || userProfile?.uid;
+    if (uidToDelete) {
+      try {
+        await deleteUserProfile(uidToDelete);
+      } catch (e) {
+        console.warn('deleteUserProfile error:', e);
+      }
+    }
+
+    if (currentUser && !currentUser.isAnonymous) {
+      try {
+        await currentUser.delete();
+      } catch (authDelErr) {
+        console.warn('Firebase Auth user delete warning:', authDelErr);
+      }
+    }
+
+    localStorage.removeItem(DEMO_GUEST_KEY);
+    localStorage.removeItem('connexa_last_uid');
+    try {
+      await signOut(auth);
+    } catch (e) {
+      // ignore
+    }
+    setCurrentUser(null);
+    setUserProfile(null);
+  };
+
   return (
     <AuthContext.Provider value={{
       currentUser,
@@ -421,7 +452,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loginGuest,
       logout,
       refreshProfile,
-      updateProfile
+      updateProfile,
+      deleteAccount
     }}>
       {children}
     </AuthContext.Provider>

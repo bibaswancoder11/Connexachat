@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { MessageSquare, Users, UserCheck, X, ArrowRight, Bell, Sparkles } from 'lucide-react';
+import { MessageSquare, Users, UserCheck, X, ArrowRight, Bell, Sparkles, ExternalLink } from 'lucide-react';
+import { extractUrlsFromText } from '../utils/urlUtils';
 
 export interface ToastNotificationData {
   id: string;
@@ -100,23 +101,47 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({ toast, onC
             {toast.body}
           </p>
 
-          {/* Direct Action Button */}
-          {toast.onAction && (
-            <button
-              onClick={() => {
-                toast.onAction?.();
-                onClose();
-              }}
-              className={`mt-2 text-[11px] font-semibold flex items-center gap-1 transition-colors ${
-                toast.type === 'friend_accepted'
-                  ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300'
-                  : 'text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300'
-              }`}
-            >
-              <span>{getActionLabel()}</span>
-              <ArrowRight className="w-3 h-3" />
-            </button>
-          )}
+          {/* Action Buttons: Direct Link Button (if notification contains a URL) and/or Chat Navigation */}
+          <div className="mt-2 flex items-center gap-3">
+            {(() => {
+              if (!toast.body) return null;
+              const urls = extractUrlsFromText(toast.body);
+              if (urls.length === 0) return null;
+              return (
+                <a
+                  href={urls[0]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onClose();
+                  }}
+                  className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline flex items-center gap-1"
+                  title={`Open link: ${urls[0]}`}
+                >
+                  <span>Open Link</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              );
+            })()}
+
+            {toast.onAction && (
+              <button
+                onClick={() => {
+                  toast.onAction?.();
+                  onClose();
+                }}
+                className={`text-[11px] font-semibold flex items-center gap-1 transition-colors ${
+                  toast.type === 'friend_accepted'
+                    ? 'text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300'
+                    : 'text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300'
+                }`}
+              >
+                <span>{getActionLabel()}</span>
+                <ArrowRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Close Button */}

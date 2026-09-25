@@ -13,7 +13,10 @@ import {
   UserX,
   Mic,
   Camera,
-  ChevronRight
+  ChevronRight,
+  Trash2,
+  AlertTriangle,
+  Loader2
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { AvatarPicker } from './AvatarPicker';
@@ -28,7 +31,7 @@ interface ProfileEditModalProps {
 }
 
 export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onSelectChatWithUser }) => {
-  const { userProfile, updateProfile } = useAuth();
+  const { userProfile, updateProfile, deleteAccount } = useAuth();
   
   const [displayName, setDisplayName] = useState(userProfile?.displayName || '');
   const [photoURL, setPhotoURL] = useState(userProfile?.photoURL || '');
@@ -43,6 +46,41 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onS
 
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<string | null>(null);
+
+  // Profile Deletion Modal State
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleRemovePhoto = async () => {
+    setPhotoURL('');
+    if (userProfile?.uid) {
+      try {
+        await updateProfile({ photoURL: '' });
+        setStatusNotice('Profile photo removed!');
+        setTimeout(() => setStatusNotice(null), 2500);
+      } catch (err) {
+        console.warn('Failed to remove photo:', err);
+      }
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!userProfile?.uid) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteAccount();
+      setShowDeleteModal(false);
+      onClose();
+    } catch (err: any) {
+      console.error('Account deletion error:', err);
+      setDeleteError(err?.message || 'Failed to delete account. Please try again.');
+      setIsDeleting(false);
+    }
+  };
 
   useEffect(() => {
     getNotificationPermission().then((perm) => {
@@ -158,10 +196,19 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onS
             </span>
           </div>
 
+          {/* Status Toast Notice */}
+          {statusNotice && (
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800 rounded-xl text-xs text-emerald-800 dark:text-emerald-300 font-medium flex items-center gap-2 animate-in fade-in">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>{statusNotice}</span>
+            </div>
+          )}
+
           {/* Avatar Picker */}
           <AvatarPicker
             currentPhotoURL={photoURL}
             onSelectPhoto={(url) => setPhotoURL(url)}
+            onRemovePhoto={handleRemovePhoto}
             usernameSeed={userProfile?.username || 'user'}
           />
 
@@ -315,6 +362,31 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onS
             <ChevronRight className="w-4 h-4 text-slate-400" />
           </div>
 
+          {/* Danger Zone: Account Deletion */}
+          <div className="p-4 bg-rose-50/70 dark:bg-rose-950/30 rounded-2xl border border-rose-200 dark:border-rose-900/50 space-y-2.5">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 bg-rose-100 dark:bg-rose-900/60 text-rose-600 dark:text-rose-300 rounded-lg">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <h4 className="text-xs font-bold text-rose-900 dark:text-rose-200">Delete Profile & Account</h4>
+            </div>
+            <p className="text-[11px] text-rose-700/90 dark:text-rose-400/90 leading-relaxed">
+              Permanently delete your profile, release handle @{userProfile?.username}, and purge your contact relationships. This action is irreversible.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                setDeleteConfirmText('');
+                setDeleteError(null);
+                setShowDeleteModal(true);
+              }}
+              className="w-full py-2 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shadow-xs transition-all flex items-center justify-center gap-1.5"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Delete Profile & Account</span>
+            </button>
+          </div>
+
           {/* Save Button */}
           <div className="flex gap-3 pt-2">
             <button
@@ -345,6 +417,80 @@ export const ProfileEditModal: React.FC<ProfileEditModalProps> = ({ onClose, onS
             }}
             onSelectChatWithUser={onSelectChatWithUser}
           />
+        )}
+
+        {/* Delete Account Confirmation Modal */}
+        {showDeleteModal && userProfile && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
+            <div className="w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-rose-200 dark:border-rose-900/60 space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="p-3 bg-rose-100 dark:bg-rose-950 text-rose-600 dark:text-rose-400 rounded-2xl shrink-0">
+                  <Trash2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-slate-900 dark:text-white">Delete Profile?</h3>
+                  <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">Permanently deletes this account</p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200/80 dark:border-rose-900/60 rounded-xl text-xs text-rose-800 dark:text-rose-300 space-y-1">
+                <p className="font-semibold">Irreversible Deletion</p>
+                <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                  Account: <span className="font-semibold text-slate-900 dark:text-white">{userProfile.displayName}</span> (@{userProfile.username}{userProfile.userTag})
+                </p>
+                <p className="text-[11px] text-rose-700 dark:text-rose-300 pt-1">
+                  Type <span className="font-bold font-mono">DELETE</span> or <span className="font-bold font-mono">@{userProfile.username}</span> to confirm:
+                </p>
+              </div>
+
+              <input
+                type="text"
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder={`Type "DELETE" or "${userProfile.username}"`}
+                className="w-full py-2.5 px-3 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-mono focus:outline-hidden focus:ring-2 focus:ring-rose-500/40 text-slate-900 dark:text-white"
+                autoFocus
+              />
+
+              {deleteError && (
+                <p className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">{deleteError}</p>
+              )}
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={isDeleting}
+                  onClick={() => setShowDeleteModal(false)}
+                  className="flex-1 py-2.5 px-3 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={
+                    isDeleting ||
+                    (deleteConfirmText.trim().toUpperCase() !== 'DELETE' &&
+                     deleteConfirmText.trim().toLowerCase() !== userProfile.username.toLowerCase() &&
+                     deleteConfirmText.trim().toLowerCase() !== `@${userProfile.username.toLowerCase()}`)
+                  }
+                  onClick={handleDeleteAccount}
+                  className="flex-1 py-2.5 px-3 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold shadow-md shadow-rose-600/20 transition-all flex items-center justify-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {isDeleting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Deleting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Delete Forever</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

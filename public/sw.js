@@ -75,26 +75,49 @@ self.addEventListener('fetch', (event) => {
     if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html')) {
       event.respondWith(
         (async () => {
+          let redirectUrl = './';
           try {
             const formData = await event.request.formData();
             const mediaFiles = formData.getAll('media');
-            const title = formData.get('title') || '';
-            const text = formData.get('text') || '';
+            const title = (formData.get('title') || '').toString();
+            const text = (formData.get('text') || '').toString();
+            const sharedUrl = (formData.get('url') || '').toString();
 
-            // Redirect to main page and notify active clients with the files
             const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-            if (clientList.length > 0) {
-              clientList[0].postMessage({
-                type: 'WEB_SHARE_TARGET_MEDIA',
-                files: mediaFiles,
-                text: `${title} ${text}`.trim()
-              });
-              clientList[0].focus();
+
+            // If files were shared (photo/video)
+            if (mediaFiles && mediaFiles.length > 0 && mediaFiles[0]?.size > 0) {
+              if (clientList.length > 0) {
+                clientList[0].postMessage({
+                  type: 'WEB_SHARE_TARGET_MEDIA',
+                  files: mediaFiles,
+                  text: `${title} ${text}`.trim()
+                });
+                clientList[0].focus();
+              }
+              redirectUrl = './?share_intent=media';
+            } 
+            // If a link or text was shared
+            else if (sharedUrl || text) {
+              if (clientList.length > 0) {
+                clientList[0].postMessage({
+                  type: 'WEB_SHARE_TARGET_LINK',
+                  url: sharedUrl,
+                  title,
+                  text
+                });
+                clientList[0].focus();
+              }
+              const searchParams = new URLSearchParams();
+              if (sharedUrl) searchParams.set('shared_url', sharedUrl);
+              if (text) searchParams.set('shared_text', text);
+              if (title) searchParams.set('shared_title', title);
+              redirectUrl = `./?${searchParams.toString()}`;
             }
           } catch (e) {
             console.warn('Share target processing error in SW:', e);
           }
-          return Response.redirect('./', 303);
+          return Response.redirect(redirectUrl, 303);
         })()
       );
     }

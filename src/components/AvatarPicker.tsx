@@ -1,10 +1,11 @@
 import React, { useRef, useState } from 'react';
-import { Camera, RefreshCw, Upload, Check, Loader2 } from 'lucide-react';
+import { Camera, RefreshCw, Upload, Check, Loader2, Trash2 } from 'lucide-react';
 import { compressImage } from '../utils/imageUtils';
 
 interface AvatarPickerProps {
   currentPhotoURL: string;
   onSelectPhoto: (url: string) => void;
+  onRemovePhoto?: () => void;
   usernameSeed?: string;
 }
 
@@ -20,6 +21,7 @@ const PRESET_STYLES = [
 export const AvatarPicker: React.FC<AvatarPickerProps> = ({
   currentPhotoURL,
   onSelectPhoto,
+  onRemovePhoto,
   usernameSeed = 'user'
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -99,20 +101,33 @@ export const AvatarPicker: React.FC<AvatarPickerProps> = ({
 
       <div className="flex items-center gap-4">
         {/* Current Selected Avatar Preview */}
-        <div className="relative group shrink-0">
-          <img
-            src={currentPhotoURL || generatePresetUrl('bottts', seed)}
-            alt="Profile Preview"
-            className="w-20 h-20 rounded-2xl object-cover ring-4 ring-blue-500/20 shadow-md bg-blue-50 dark:bg-slate-800"
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="absolute bottom-0 right-0 p-1.5 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors"
-            title="Upload custom photo"
-          >
-            <Camera className="w-3.5 h-3.5" />
-          </button>
+        <div className="flex flex-col items-center shrink-0">
+          <div className="relative group">
+            <img
+              src={currentPhotoURL || generatePresetUrl('bottts', seed)}
+              alt="Profile Preview"
+              className="w-20 h-20 rounded-2xl object-cover ring-4 ring-blue-500/20 shadow-md bg-blue-50 dark:bg-slate-800"
+            />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="absolute bottom-0 right-0 p-1.5 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition-colors"
+              title="Upload custom photo"
+            >
+              <Camera className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {currentPhotoURL ? (
+            <button
+              type="button"
+              onClick={() => (onRemovePhoto ? onRemovePhoto() : onSelectPhoto(''))}
+              className="mt-2 text-[11px] text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 font-semibold flex items-center gap-1 hover:underline transition-colors"
+              title="Remove profile photo"
+            >
+              <Trash2 className="w-3 h-3" />
+              <span>Remove</span>
+            </button>
+          ) : null}
         </div>
 
         {activeTab === 'presets' && (

@@ -16,7 +16,8 @@ import { requestNotificationPermission, sendWebNotification, playNotificationChi
 import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 import { ShareMediaModal, SharedMediaItem } from './components/ShareMediaModal';
-import { initShareTargetListener, subscribeToShareIntents } from './utils/apkIntentHandler';
+import { ShareLinkModal } from './components/ShareLinkModal';
+import { initShareTargetListener, subscribeToShareIntents, subscribeToLinkShareIntents, SharedLinkPayload } from './utils/apkIntentHandler';
 import { IncomingCallBanner } from './components/IncomingCallBanner';
 import { CallModal } from './components/CallModal';
 import { CallSession, CallType } from './types';
@@ -40,6 +41,7 @@ const ConnexaApp: React.FC = () => {
 
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [sharedMediaPayload, setSharedMediaPayload] = useState<{ items: SharedMediaItem[]; text?: string } | null>(null);
+  const [sharedLinkPayload, setSharedLinkPayload] = useState<SharedLinkPayload | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
   // Calling States (Free WebRTC Peer-to-Peer Calls)
@@ -101,6 +103,12 @@ const ConnexaApp: React.FC = () => {
         }
       });
 
+      const unsubLinkShare = subscribeToLinkShareIntents((payload) => {
+        if (payload && (payload.url || payload.text)) {
+          setSharedLinkPayload(payload);
+        }
+      });
+
       // Handle notification clicks forwarded from Service Worker (Web / PWA)
       let handleSwMessage: ((event: MessageEvent) => void) | null = null;
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
@@ -122,6 +130,7 @@ const ConnexaApp: React.FC = () => {
       return () => {
         unsubNativeNotif();
         unsubShare();
+        unsubLinkShare();
         if (handleSwMessage && 'serviceWorker' in navigator) {
           navigator.serviceWorker.removeEventListener('message', handleSwMessage);
         }
@@ -256,10 +265,6 @@ const ConnexaApp: React.FC = () => {
       }
 
       setChats(chatList);
-
-      if (!activeChatId && chatList.length > 0 && typeof window !== 'undefined' && window.innerWidth >= 768) {
-        setActiveChatId(chatList[0].id);
-      }
     });
 
     // 2. Incoming friend requests subscription
@@ -615,10 +620,30 @@ const ConnexaApp: React.FC = () => {
             onClose={() => setSharedMediaPayload(null)}
             onSuccess={(chatIds) => {
               setSharedMediaPayload(null);
-              if (chatIds.length === 1) {
-                setActiveChatId(chatIds[0]);
-                setActiveTab('chats');
-              }
+              setToastNotification({
+                id: Date.now().toString(),
+                title: 'Media Shared',
+                body: `Media sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
+              });
+            }}
+          />
+        )}
+
+        {/* Multi-Recipient / Native Share Target Link Modal */}
+        {sharedLinkPayload && userProfile && (
+          <ShareLinkModal
+            currentUser={userProfile}
+            friends={friends}
+            chats={chats}
+            initialPayload={sharedLinkPayload}
+            onClose={() => setSharedLinkPayload(null)}
+            onSuccess={(chatIds) => {
+              setSharedLinkPayload(null);
+              setToastNotification({
+                id: Date.now().toString(),
+                title: 'Link Shared',
+                body: `Link sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
+              });
             }}
           />
         )}

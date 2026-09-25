@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2 } from 'lucide-react';
+import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2, ExternalLink } from 'lucide-react';
 import { ChatRoom, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
 import { EnlargeableAvatar } from './EnlargeableAvatar';
+import { extractUrlsFromText } from '../utils/urlUtils';
 
 interface ChatListSidebarProps {
   chats: ChatRoom[];
@@ -209,15 +210,35 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
                   </div>
 
                   <div className="flex items-center justify-between gap-2">
-                    <p className={`text-xs truncate ${unreadCount > 0 ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
+                    <p className={`text-xs truncate flex-1 ${unreadCount > 0 ? 'font-bold text-slate-900 dark:text-white' : 'text-slate-500 dark:text-slate-400'}`}>
                       {chat.lastMessage || 'No messages yet...'}
                     </p>
 
-                    {unreadCount > 0 && (
-                      <span className="shrink-0 px-1.5 py-0.5 bg-blue-600 text-white font-bold rounded-full text-[10px]">
-                        {unreadCount}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {(() => {
+                        if (!chat.lastMessage) return null;
+                        const urls = extractUrlsFromText(chat.lastMessage);
+                        if (urls.length === 0) return null;
+                        return (
+                          <a
+                            href={urls[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-950/60 rounded-md transition-colors"
+                            title={`Open link: ${urls[0]}`}
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        );
+                      })()}
+
+                      {unreadCount > 0 && (
+                        <span className="px-1.5 py-0.5 bg-blue-600 text-white font-bold rounded-full text-[10px]">
+                          {unreadCount}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </button>
