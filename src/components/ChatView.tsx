@@ -1214,10 +1214,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               type="button"
               onClick={() => { setSelectedImage(null); setSelectedVideo(null); }}
-              className="p-1.5 text-slate-400 hover:text-rose-500 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors shrink-0"
-              title="Remove media"
+              className="px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 rounded-xl text-xs font-semibold transition-colors shrink-0 flex items-center gap-1 cursor-pointer min-h-[36px]"
+              title="Cancel attachment"
             >
-              <X className="w-4 h-4" />
+              <X className="w-3.5 h-3.5" />
+              <span>Cancel</span>
             </button>
           )}
         </div>
@@ -1548,8 +1549,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Block User Confirmation Modal */}
       {showBlockConfirmModal && otherUser && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowBlockConfirmModal(false);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400">
                 <UserX className="w-6 h-6" />
@@ -1574,14 +1585,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowBlockConfirmModal(false)}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+                className="px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={confirmBlock}
-                className="px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all"
+                className="px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all cursor-pointer"
               >
                 Block User
               </button>
@@ -1592,8 +1603,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Delete Message / Call Log Confirmation Modal */}
       {confirmDeleteModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isDeleting) {
+              setConfirmDeleteModal(null);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400 shrink-0">
                 {confirmDeleteModal.isCallLog ? <Phone className="w-6 h-6" /> : <Trash2 className="w-6 h-6" />}
@@ -1622,7 +1643,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   type="button"
                   disabled={isDeleting}
                   onClick={handleDeleteForEveryone}
-                  className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Trash2 className="w-4 h-4" />
                   <span>
@@ -1639,7 +1660,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 disabled={isDeleting}
                 onClick={handleDeleteForMe}
-                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Delete for Me Only</span>
               </button>
@@ -1648,7 +1669,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 disabled={isDeleting}
                 onClick={() => setConfirmDeleteModal(null)}
-                className="w-full px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+                className="w-full px-4 py-2.5 min-h-[44px] text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center justify-center cursor-pointer"
               >
                 Cancel
               </button>
@@ -1659,8 +1680,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       {/* Clear All Call Logs Confirmation Modal */}
       {showClearCallLogsModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150">
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !isClearingCallLogs) {
+              setShowClearCallLogsModal(false);
+            }
+          }}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-slate-200 dark:border-slate-700 space-y-4 animate-in fade-in zoom-in-95 duration-150"
+          >
             <div className="flex items-center gap-3">
               <div className="p-3 bg-rose-100 dark:bg-rose-950/60 rounded-2xl text-rose-600 dark:text-rose-400 shrink-0">
                 <Phone className="w-6 h-6" />
@@ -1682,7 +1713,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 disabled={isClearingCallLogs}
                 onClick={() => handleClearCallLogs('both')}
-                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/20 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Trash2 className="w-4 h-4" />
                 <span>{isClearingCallLogs ? 'Clearing...' : 'Clear for Both Sides (Everyone)'}</span>
@@ -1692,7 +1723,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 disabled={isClearingCallLogs}
                 onClick={() => handleClearCallLogs('me')}
-                className="w-full px-4 py-2.5 rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                className="w-full px-4 py-2.5 min-h-[44px] rounded-xl text-xs font-semibold bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <span>Clear for Me Only</span>
               </button>
@@ -1701,7 +1732,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 disabled={isClearingCallLogs}
                 onClick={() => setShowClearCallLogsModal(false)}
-                className="w-full px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors"
+                className="w-full px-4 py-2.5 min-h-[44px] text-xs font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition-colors flex items-center justify-center cursor-pointer"
               >
                 Cancel
               </button>

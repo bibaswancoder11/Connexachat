@@ -27,6 +27,8 @@ import {
   rejectCallSession, 
   logCallInChat 
 } from './services/callService';
+import { Capacitor } from '@capacitor/core';
+import { App as CapApp } from '@capacitor/app';
 
 const ConnexaApp: React.FC = () => {
   const { currentUser, userProfile, loading } = useAuth();
@@ -58,12 +60,87 @@ const ConnexaApp: React.FC = () => {
   const knownFriendUidsRef = useRef<Set<string> | null>(null);
   const knownIncomingReqIdsRef = useRef<Set<string> | null>(null);
 
+  // Keep refs for active modals to handle mobile back button cancellation
+  const sharedMediaPayloadRef = useRef(sharedMediaPayload);
+  sharedMediaPayloadRef.current = sharedMediaPayload;
+
+  const sharedLinkPayloadRef = useRef(sharedLinkPayload);
+  sharedLinkPayloadRef.current = sharedLinkPayload;
+
+  const showCreateGroupModalRef = useRef(showCreateGroupModal);
+  showCreateGroupModalRef.current = showCreateGroupModal;
+
+  const activeChatIdRef = useRef(activeChatId);
+  activeChatIdRef.current = activeChatId;
+
+  // Mobile / Android Hardware Back Button listener to cancel modals or screens
+  useEffect(() => {
+    if (Capacitor.isNativePlatform()) {
+      let removeListener: (() => void) | null = null;
+      CapApp.addListener('backButton', ({ canGoBack }) => {
+        // 1. If share link modal is open, cancel it
+        if (sharedLinkPayloadRef.current) {
+          setSharedLinkPayload(null);
+          return;
+        }
+        // 2. If share media modal is open, cancel it
+        if (sharedMediaPayloadRef.current) {
+          setSharedMediaPayload(null);
+          return;
+        }
+        // 3. If create group modal is open, cancel it
+        if (showCreateGroupModalRef.current) {
+          setShowCreateGroupModal(false);
+          return;
+        }
+        // 4. If active chat is open on mobile screen, go back to chats list
+        if (activeChatIdRef.current) {
+          setActiveChatId(null);
+          return;
+        }
+        if (canGoBack) {
+          window.history.back();
+        } else {
+          CapApp.exitApp();
+        }
+      }).then(handle => {
+        removeListener = () => handle.remove();
+      });
+
+      return () => {
+        if (removeListener) removeListener();
+      };
+    }
+  }, []);
+
+  // Always initialize Service Worker & Web Share Target listeners unconditionally on mount
+  useEffect(() => {
+    initServiceWorker();
+    initShareTargetListener();
+
+    const unsubShare = subscribeToShareIntents((payload) => {
+      if (payload && (payload.items.length > 0 || payload.text)) {
+        setSharedMediaPayload(payload);
+      }
+    });
+
+    const unsubLinkShare = subscribeToLinkShareIntents((payload) => {
+      if (payload && (payload.url || payload.text)) {
+        setSharedLinkPayload(payload);
+      }
+    });
+
+    return () => {
+      unsubShare();
+      unsubLinkShare();
+    };
+  }, []);
+
   // Ask for Push Notification permission & register FCM & Web Push on login
   useEffect(() => {
     if (currentUser) {
       requestNotificationPermission(currentUser.uid);
       initPushNotifications(currentUser.uid);
-      initServiceWorker();
 
       // Check if launched via notification click query parameter ?chatId=...
       try {
@@ -95,20 +172,6 @@ const ConnexaApp: React.FC = () => {
         }
       });
 
-      // Handle share intents from Android native share sheet / PWA Web Share Target
-      initShareTargetListener();
-      const unsubShare = subscribeToShareIntents((payload) => {
-        if (payload && (payload.items.length > 0 || payload.text)) {
-          setSharedMediaPayload(payload);
-        }
-      });
-
-      const unsubLinkShare = subscribeToLinkShareIntents((payload) => {
-        if (payload && (payload.url || payload.text)) {
-          setSharedLinkPayload(payload);
-        }
-      });
-
       // Handle notification clicks forwarded from Service Worker (Web / PWA)
       let handleSwMessage: ((event: MessageEvent) => void) | null = null;
       if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
@@ -129,8 +192,6 @@ const ConnexaApp: React.FC = () => {
 
       return () => {
         unsubNativeNotif();
-        unsubShare();
-        unsubLinkShare();
         if (handleSwMessage && 'serviceWorker' in navigator) {
           navigator.serviceWorker.removeEventListener('message', handleSwMessage);
         }
@@ -509,6 +570,8 @@ const ConnexaApp: React.FC = () => {
               activeTab={activeTab}
               unreadRequestsCount={incomingRequests.length}
               onCreateGroupClick={() => setShowCreateGroupModal(true)}
+              onShareLinkClick={() => setSharedLinkPayload({ url: '', text: '', source: 'in-app' })}
+              onShareMediaClick={() => setSharedMediaPayload({ items: [], text: '', source: 'file-drop' })}
             />
           </div>
 

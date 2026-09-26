@@ -62,21 +62,28 @@ if (!content.includes('android:requestLegacyExternalStorage="true"')) {
   content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"');
 }
 
-// 4. Intent Filters for Android Gallery Share Target (SEND and SEND_MULTIPLE)
+// 4. Intent Filters for Android Share Sheet Target (SEND and SEND_MULTIPLE) & Deep Links
 const shareIntentFilter = `
-            <!-- Native Android Share Sheet Target (Photos & Videos from Gallery) -->
+            <!-- Native Android Share Sheet Target (Links, Text, Photos & Videos) -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="text/*" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
-                <data android:mimeType="text/plain" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="connexa" />
             </intent-filter>`;
 
 if (!content.includes('android.intent.action.SEND_MULTIPLE')) {

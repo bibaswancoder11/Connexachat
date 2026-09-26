@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2, ExternalLink } from 'lucide-react';
+import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2, ExternalLink, Link2, ImagePlus } from 'lucide-react';
 import { ChatRoom, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
@@ -14,6 +14,8 @@ interface ChatListSidebarProps {
   activeTab: 'chats' | 'search' | 'requests';
   unreadRequestsCount: number;
   onCreateGroupClick: () => void;
+  onShareLinkClick?: () => void;
+  onShareMediaClick?: () => void;
 }
 
 export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
@@ -23,7 +25,9 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   onNavigateTab,
   activeTab,
   unreadRequestsCount,
-  onCreateGroupClick
+  onCreateGroupClick,
+  onShareLinkClick,
+  onShareMediaClick
 }) => {
   const { userProfile } = useAuth();
   const [filterText, setFilterText] = useState('');
@@ -60,12 +64,12 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   return (
     <div className="w-full md:w-80 lg:w-96 shrink-0 h-full flex flex-col bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800">
       
-      {/* Top Controls: Search Filter & Create Group */}
+      {/* Top Controls: Search Filter & Quick Actions */}
       <div className="p-4 border-b border-slate-100 dark:border-slate-800 space-y-3">
         
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <div className="relative flex-1">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
             <input
               type="text"
               value={filterText}
@@ -75,13 +79,33 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
             />
           </div>
 
+          {onShareLinkClick && (
+            <button
+              onClick={onShareLinkClick}
+              className="p-2 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-all"
+              title="Share Web Link with Friends"
+            >
+              <Link2 className="w-4 h-4" />
+            </button>
+          )}
+
+          {onShareMediaClick && (
+            <button
+              onClick={onShareMediaClick}
+              className="p-2 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-all"
+              title="Share Media with Friends"
+            >
+              <ImagePlus className="w-4 h-4" />
+            </button>
+          )}
+
           <button
             onClick={onCreateGroupClick}
-            className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-all flex items-center gap-1.5 shrink-0 px-3 text-xs font-semibold"
+            className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-xs transition-all flex items-center gap-1 shrink-0 px-2.5 text-xs font-semibold"
             title="Create New Group Chat"
           >
             <PlusCircle className="w-4 h-4" />
-            <span className="hidden sm:inline">Group</span>
+            <span className="hidden sm:inline text-[11px]">Group</span>
           </button>
         </div>
 

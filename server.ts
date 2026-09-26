@@ -12,6 +12,22 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Fallback Web Share Target POST handler (in case request reaches Express directly without SW interception)
+app.post(['/', '/share-target', '/index.html'], (req, res) => {
+  const url = (req.body?.url || req.query?.url || '').toString();
+  const text = (req.body?.text || req.query?.text || '').toString();
+  const title = (req.body?.title || req.query?.title || '').toString();
+
+  const sp = new URLSearchParams();
+  if (url) sp.set('shared_url', url);
+  if (text) sp.set('shared_text', text);
+  if (title) sp.set('shared_title', title);
+
+  const queryStr = sp.toString();
+  return res.redirect(303, queryStr ? `/?${queryStr}` : '/');
+});
 
 // Read Firebase applet configuration
 let firebaseConfig: any = {};
@@ -249,7 +265,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.all('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

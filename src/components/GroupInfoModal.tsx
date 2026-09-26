@@ -42,6 +42,17 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Support mobile back navigation and desktop Escape key to cancel
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
   // Get current member profiles map or fallback list
   const memberProfilesMap = chat.participantProfiles || {};
   const currentMemberUids = chat.participants || [];
@@ -118,17 +129,38 @@ export const GroupInfoModal: React.FC<GroupInfoModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-200">
+    <div 
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col h-[92dvh] sm:h-auto sm:max-h-[88vh]"
+      >
         
         {/* Top Banner */}
-        <div className="p-6 bg-gradient-to-br from-blue-600 via-blue-700 to-slate-900 text-white relative flex flex-col items-center text-center">
-          <button
-            onClick={onClose}
-            className="absolute top-4 right-4 p-2 text-white/70 hover:text-white rounded-xl hover:bg-white/10 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+        <div className="p-6 bg-gradient-to-br from-blue-600 via-blue-700 to-slate-900 text-white relative flex flex-col items-center text-center shrink-0">
+          <div className="absolute top-4 right-4 flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs font-semibold text-white/90 hover:text-white bg-black/25 hover:bg-black/40 rounded-xl transition-colors min-h-[36px] flex items-center justify-center cursor-pointer"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="p-2 text-white/70 hover:text-white rounded-xl hover:bg-white/10 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
 
           <div className="mb-3">
             <EnlargeableAvatar

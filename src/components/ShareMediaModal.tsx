@@ -53,16 +53,60 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (initialItems && initialItems.length > 0) {
+      setMediaItems(initialItems);
+    }
+  }, [initialItems]);
+
+  // Support mobile back navigation and desktop Escape key to cancel
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+
+    // Support browser history / mobile swipe-back gesture to cancel modal cleanly
+    const stateId = `share-media-modal-${Date.now()}`;
+    window.history.pushState({ modal: stateId }, '');
+    const handlePopState = () => {
+      onClose();
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, [onClose]);
+
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Group chats available
-  const groupChats = chats.filter(c => c.isGroup);
+  const groupChats = React.useMemo(() => chats.filter(c => c.isGroup), [chats]);
 
-  // Filter blocked friends
-  const availableFriends = friends.map(friend => ({
-    ...friend,
-    isBlocked: isUserBlockedLocally(currentUser.uid, friend.uid)
-  }));
+  // Combine direct accepted friends with any 1-on-1 chat contacts so all friends are accessible
+  const availableFriends = React.useMemo(() => {
+    const map = new Map<string, UserProfile>();
+    friends.forEach(f => {
+      if (f.uid !== currentUser.uid) {
+        map.set(f.uid, f);
+      }
+    });
+    chats.forEach(c => {
+      if (!c.isGroup && c.otherUser && c.otherUser.uid !== currentUser.uid) {
+        if (!map.has(c.otherUser.uid)) {
+          map.set(c.otherUser.uid, c.otherUser);
+        }
+      }
+    });
+    return Array.from(map.values()).map(friend => ({
+      ...friend,
+      isBlocked: isUserBlockedLocally(currentUser.uid, friend.uid)
+    }));
+  }, [friends, chats, currentUser.uid]);
 
   const handleToggleRecipient = (id: string, isBlocked = false) => {
     if (isBlocked) {
@@ -130,8 +174,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     setMediaItems(prev => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleSendBroadcast = async () => {
-    if (selectedRecipientIds.length === 0) {
+  const handleSendToRecipients = async (targetRecipientIds: string[]) => {
+    if (targetRecipientIds.length === 0) {
       alert('Please select at least one friend or group to share with.');
       return;
     }
@@ -142,12 +186,12 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     }
 
     setIsSending(true);
-    setStatusMessage(`Sending media to ${selectedRecipientIds.length} conversation(s)...`);
+    setStatusMessage(`Sending media to ${targetRecipientIds.length} conversation(s)...`);
 
     const affectedChatIds: string[] = [];
 
     try {
-      for (const recipientId of selectedRecipientIds) {
+      for (const recipientId of targetRecipientIds) {
         let targetChatId = recipientId;
 
         // Check if it's a direct friend UID
@@ -215,6 +259,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     }
   };
 
+  const handleSendBroadcast = () => handleSendToRecipients(selectedRecipientIds);
+
   const filteredFriends = availableFriends.filter(f => {
     const q = searchQuery.toLowerCase().trim();
     if (!q) return true;
@@ -228,27 +274,50 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md">
-      <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-150">
+    <div 
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-slate-900/60 backdrop-blur-md animate-in fade-in duration-150"
+    >
+      <div 
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-t-3xl sm:rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col h-[92dvh] sm:h-auto sm:max-h-[88vh]"
+      >
         
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-slate-100 dark:border-slate-800 shrink-0">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2.5 bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 rounded-2xl">
+        <div className="flex items-center justify-between p-3.5 sm:p-5 border-b border-slate-100 dark:border-slate-800 shrink-0">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="p-2.5 bg-blue-100 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 rounded-2xl shrink-0">
               <ImageIcon className="w-5 h-5" />
             </div>
-            <div>
-              <h2 className="text-base font-bold text-slate-900 dark:text-white">Share Photos & Videos</h2>
-              <p className="text-xs text-slate-500 dark:text-slate-400">Share with selected friends and group chats</p>
+            <div className="min-w-0">
+              <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white truncate">Share Photos & Videos</h2>
+              <p className="text-[11px] sm:text-xs text-slate-500 dark:text-slate-400 truncate">Share with selected friends and group chats</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            disabled={isSending}
-            className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <X className="w-5 h-5" />
-          </button>
+
+          {/* Quick Header Cancel & Close for Mobile */}
+          <div className="flex items-center gap-1.5 shrink-0 ml-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl transition-colors min-h-[36px] flex items-center justify-center cursor-pointer"
+              title="Cancel sharing"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Media Preview & Attachment Strip */}
@@ -380,8 +449,20 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                           </p>
                         </div>
                       </div>
-                      <div className="shrink-0 text-blue-600 dark:text-blue-400">
-                        {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 text-slate-400" />}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSendToRecipients([group.id]);
+                          }}
+                          className="px-2.5 py-1 text-[10px] font-semibold rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/60 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-300 transition-colors"
+                        >
+                          Quick Send
+                        </button>
+                        <div className="text-blue-600 dark:text-blue-400">
+                          {isSelected ? <CheckSquare className="w-5 h-5" /> : <Square className="w-5 h-5 text-slate-400" />}
+                        </div>
                       </div>
                     </div>
                   );
@@ -440,14 +521,28 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                         </div>
                       </div>
 
-                      <div className="shrink-0">
-                        {isBlocked ? (
-                          <span className="text-[10px] text-slate-400 italic">Cannot send</span>
-                        ) : isSelected ? (
-                          <CheckSquare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
-                        ) : (
-                          <Square className="w-5 h-5 text-slate-400" />
+                      <div className="flex items-center gap-2 shrink-0">
+                        {!isBlocked && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleSendToRecipients([friend.uid]);
+                            }}
+                            className="px-2.5 py-1 text-[10px] font-semibold rounded-lg bg-blue-100 hover:bg-blue-200 dark:bg-blue-900/60 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-300 transition-colors"
+                          >
+                            Quick Send
+                          </button>
                         )}
+                        <div>
+                          {isBlocked ? (
+                            <span className="text-[10px] text-slate-400 italic">Cannot send</span>
+                          ) : isSelected ? (
+                            <CheckSquare className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                          ) : (
+                            <Square className="w-5 h-5 text-slate-400" />
+                          )}
+                        </div>
                       </div>
                     </div>
                   );
@@ -458,23 +553,22 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
         </div>
 
         {/* Footer with Send Button */}
-        <div className="p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex items-center justify-between gap-3 shrink-0">
-          <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
+        <div className="p-3.5 sm:p-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 backdrop-blur-md flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 sm:gap-3 shrink-0 sticky bottom-0 z-10 pb-[max(0.875rem,env(safe-area-inset-bottom))]">
+          <div className="text-xs text-slate-500 dark:text-slate-400 truncate text-center sm:text-left">
             {selectedRecipientIds.length > 0 ? (
               <span className="font-semibold text-slate-800 dark:text-slate-200">
                 Sharing with {selectedRecipientIds.length} recipient{selectedRecipientIds.length > 1 ? 's' : ''}
               </span>
             ) : (
-              <span>Select recipients above</span>
+              <span>Select recipients above or use Quick Send</span>
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={onClose}
-              disabled={isSending}
-              className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors"
+              className="flex-1 sm:flex-none px-4 py-3 sm:py-2.5 min-h-[44px] rounded-xl text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-200/80 hover:bg-slate-300 dark:bg-slate-800 dark:hover:bg-slate-700 transition-colors flex items-center justify-center cursor-pointer"
             >
               Cancel
             </button>
@@ -482,7 +576,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               type="button"
               onClick={handleSendBroadcast}
               disabled={isSending || selectedRecipientIds.length === 0 || (mediaItems.length === 0 && !caption.trim())}
-              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none"
+              className="flex-1 sm:flex-none px-5 py-3 sm:py-2.5 min-h-[44px] bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-2 shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none cursor-pointer"
             >
               {isSending ? (
                 <>

@@ -68,47 +68,94 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(data.title || 'Connexa Messenger', options));
 });
 
+// IndexedDB helper for Web Share Target persistence
+function openShareDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('connexa_share_target_db', 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('shares')) {
+        db.createObjectStore('shares', { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => reject(request.error);
+  });
+}
+
+async function storeShareRecord(record) {
+  try {
+    const db = await openShareDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction('shares', 'readwrite');
+      const store = tx.objectStore('shares');
+      const req = store.put(record);
+      req.onsuccess = () => resolve(record.id);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (err) {
+    console.warn('Failed to store share record in IndexedDB:', err);
+    return null;
+  }
+}
+
 // Intercept Web Share Target POST requests
 self.addEventListener('fetch', (event) => {
   if (event.request.method === 'POST') {
     const url = new URL(event.request.url);
-    if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html')) {
+    if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html') || url.pathname.includes('/share')) {
       event.respondWith(
         (async () => {
           let redirectUrl = './';
           try {
             const formData = await event.request.formData();
             const mediaFiles = formData.getAll('media');
-            const title = (formData.get('title') || '').toString();
-            const text = (formData.get('text') || '').toString();
-            const sharedUrl = (formData.get('url') || '').toString();
+            const title = (formData.get('title') || '').toString().trim();
+            const text = (formData.get('text') || '').toString().trim();
+            const sharedUrl = (formData.get('url') || '').toString().trim();
 
+            const shareId = 'share_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+            const hasMedia = mediaFiles && mediaFiles.length > 0 && mediaFiles.some(f => f && f.size > 0);
+
+            // Store in IndexedDB so the client can retrieve files and data even when launched from closed state
+            const shareRecord = {
+              id: shareId,
+              timestamp: Date.now(),
+              type: hasMedia ? 'media' : 'link',
+              title,
+              text,
+              url: sharedUrl,
+              files: hasMedia ? mediaFiles : []
+            };
+
+            await storeShareRecord(shareRecord);
+
+            // Broadcast to any open windows if available
             const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-
-            // If files were shared (photo/video)
-            if (mediaFiles && mediaFiles.length > 0 && mediaFiles[0]?.size > 0) {
-              if (clientList.length > 0) {
-                clientList[0].postMessage({
+            for (const client of clientList) {
+              if (hasMedia) {
+                client.postMessage({
                   type: 'WEB_SHARE_TARGET_MEDIA',
+                  shareId,
                   files: mediaFiles,
                   text: `${title} ${text}`.trim()
                 });
-                clientList[0].focus();
-              }
-              redirectUrl = './?share_intent=media';
-            } 
-            // If a link or text was shared
-            else if (sharedUrl || text) {
-              if (clientList.length > 0) {
-                clientList[0].postMessage({
+              } else {
+                client.postMessage({
                   type: 'WEB_SHARE_TARGET_LINK',
+                  shareId,
                   url: sharedUrl,
                   title,
                   text
                 });
-                clientList[0].focus();
               }
+            }
+
+            if (hasMedia) {
+              redirectUrl = `./?share_intent=media&shared_id=${encodeURIComponent(shareId)}`;
+            } else {
               const searchParams = new URLSearchParams();
+              searchParams.set('shared_id', shareId);
               if (sharedUrl) searchParams.set('shared_url', sharedUrl);
               if (text) searchParams.set('shared_text', text);
               if (title) searchParams.set('shared_title', title);
