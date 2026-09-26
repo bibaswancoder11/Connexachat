@@ -707,6 +707,10 @@ const ConnexaApp: React.FC = () => {
                 title: 'Link Shared',
                 body: `Link sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
               });
+              if (chatIds && chatIds.length === 1) {
+                setActiveChatId(chatIds[0]);
+                setActiveTab('chats');
+              }
             }}
           />
         )}

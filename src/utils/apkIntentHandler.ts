@@ -201,6 +201,40 @@ export async function checkPendingShareTargets() {
   if (typeof window === 'undefined') return;
 
   try {
+    // 0. Check localStorage (for native Android APK cold launch or background intent)
+    try {
+      const rawStored = localStorage.getItem('connexa_pending_share_link');
+      if (rawStored) {
+        localStorage.removeItem('connexa_pending_share_link');
+        let parsed: any = null;
+        try {
+          parsed = JSON.parse(rawStored);
+        } catch {
+          parsed = { text: rawStored };
+        }
+        let url = parsed.url || '';
+        let text = parsed.text || '';
+        let title = parsed.title || '';
+        if (!url && text) {
+          const extracted = extractUrlAndCaption(text);
+          if (extracted) {
+            url = extracted.url;
+            text = extracted.caption;
+          }
+        }
+        if (url) {
+          notifyLinkShareIntent({
+            url,
+            title: title || undefined,
+            text: text || undefined,
+            source: 'android-share-sheet'
+          });
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+
     const params = new URLSearchParams(window.location.search);
     const sharedId = params.get('shared_id');
     const shareIntent = params.get('share_intent');
@@ -408,11 +442,21 @@ export function initShareTargetListener() {
   });
 
   window.addEventListener('connexa:share-link', (e: any) => {
-    if (e.detail?.url) {
+    let url = e.detail?.url || '';
+    let text = e.detail?.text || '';
+    let title = e.detail?.title || '';
+    if (!url && text) {
+      const extracted = extractUrlAndCaption(text);
+      if (extracted) {
+        url = extracted.url;
+        text = extracted.caption;
+      }
+    }
+    if (url) {
       notifyLinkShareIntent({
-        url: e.detail.url,
-        title: e.detail.title,
-        text: e.detail.text,
+        url,
+        title: title || undefined,
+        text: text || undefined,
         source: 'android-share-sheet'
       });
     }

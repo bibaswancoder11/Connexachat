@@ -112,3 +112,93 @@ if (!content.includes('com.google.firebase.messaging.default_notification_channe
 
 fs.writeFileSync(manifestPath, content, 'utf8');
 console.log('✅ AndroidManifest.xml successfully configured with media permissions, features, FCM push metadata, and native share sheet intent filters!');
+
+// 6. Configure MainActivity.java to intercept ACTION_SEND intents (from YouTube, Gallery, etc.)
+function findMainActivity(dir) {
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir);
+  for (const f of files) {
+    const full = path.join(dir, f);
+    if (fs.statSync(full).isDirectory()) {
+      const res = findMainActivity(full);
+      if (res) return res;
+    } else if (f === 'MainActivity.java') {
+      return full;
+    }
+  }
+  return null;
+}
+
+const javaDir = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'java');
+const mainActivityPath = findMainActivity(javaDir);
+
+if (mainActivityPath && fs.existsSync(mainActivityPath)) {
+  let mainContent = fs.readFileSync(mainActivityPath, 'utf8');
+  if (!mainContent.includes('handleShareIntent')) {
+    // Add imports
+    if (!mainContent.includes('import android.content.Intent;')) {
+      mainContent = mainContent.replace(
+        'import com.getcapacitor.BridgeActivity;',
+        'import com.getcapacitor.BridgeActivity;\nimport android.content.Intent;\nimport android.os.Bundle;\nimport org.json.JSONObject;'
+      );
+    }
+
+    const shareHandlingMethods = `
+    @Override
+    public void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        handleShareIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleShareIntent(intent);
+    }
+
+    private void handleShareIntent(Intent intent) {
+        if (intent == null) return;
+        String action = intent.getAction();
+        String type = intent.getType();
+
+        if (Intent.ACTION_SEND.equals(action) && type != null) {
+            if (type.startsWith("text/")) {
+                String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+                String sharedTitle = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+                if (sharedText != null && !sharedText.isEmpty()) {
+                    passSharedTextToWebView(sharedText, sharedTitle);
+                }
+            }
+        }
+    }
+
+    private void passSharedTextToWebView(String text, String title) {
+        try {
+            String escapedText = JSONObject.quote(text);
+            String escapedTitle = title != null ? JSONObject.quote(title) : "null";
+            String js = "(function(){ " +
+                "try { localStorage.setItem('connexa_pending_share_link', JSON.stringify({ text: " + escapedText + ", title: " + escapedTitle + " })); } catch(e){} " +
+                "window.dispatchEvent(new CustomEvent('connexa:share-link', { detail: { text: " + escapedText + ", title: " + escapedTitle + " } })); " +
+                "})();";
+
+            if (this.bridge != null && this.bridge.getWebView() != null) {
+                this.bridge.getWebView().post(() -> {
+                    this.bridge.getWebView().evaluateJavascript(js, null);
+                });
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+`;
+
+    mainContent = mainContent.replace(
+      /public class MainActivity extends BridgeActivity\s*\{/,
+      `public class MainActivity extends BridgeActivity {\n${shareHandlingMethods}`
+    );
+
+    fs.writeFileSync(mainActivityPath, mainContent, 'utf8');
+    console.log('✅ MainActivity.java successfully configured with native ACTION_SEND intent handlers!');
+  }
+}

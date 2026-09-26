@@ -5,6 +5,24 @@
  */
 
 /**
+ * Extract YouTube Video ID from any standard YouTube URL (watch, youtu.be, shorts, embed)
+ */
+export function parseYouTubeVideoId(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/i;
+  const match = rawUrl.match(regExp);
+  return (match && match[1]) ? match[1] : null;
+}
+
+/**
+ * Returns a high-resolution YouTube video thumbnail URL if the link is from YouTube
+ */
+export function getYouTubeThumbnailUrl(rawUrl: string): string | null {
+  const videoId = parseYouTubeVideoId(rawUrl);
+  return videoId ? `https://img.youtube.com/vi/${videoId}/hqdefault.jpg` : null;
+}
+
+/**
  * Strips trailing punctuation often caught by regex in conversational text
  */
 export function cleanTrailingPunctuation(url: string): string {
