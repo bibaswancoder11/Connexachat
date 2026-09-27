@@ -355,13 +355,15 @@ export const sendMessage = async (
   chatId: string, 
   senderId: string, 
   text: string, 
-  type: 'text' | 'image' | 'video' | 'audio' = 'text',
+  type: 'text' | 'image' | 'video' | 'audio' | 'file' = 'text',
   mediaUrl?: string,
   senderProfile?: UserProfile,
   extraMedia?: {
     mediaThumbnail?: string;
     mediaDuration?: number;
     mediaSize?: number;
+    filename?: string;
+    fileType?: string;
   }
 ): Promise<void> => {
   const messagesRef = collection(db, 'chats', chatId, 'messages');
@@ -370,6 +372,7 @@ export const sendMessage = async (
   if (type === 'image') previewText = text.trim() ? `📷 ${text.trim()}` : '📷 Photo';
   if (type === 'video') previewText = text.trim() ? `🎥 ${text.trim()}` : '🎥 Video';
   if (type === 'audio') previewText = '🎤 Voice Note';
+  if (type === 'file') previewText = text.trim() ? `📄 ${extraMedia?.filename || 'Document'}: ${text.trim()}` : `📄 ${extraMedia?.filename || 'Document'}`;
 
   const newMessage = {
     chatId,
@@ -382,6 +385,9 @@ export const sendMessage = async (
     ...(extraMedia?.mediaThumbnail ? { mediaThumbnail: extraMedia.mediaThumbnail } : {}),
     ...(extraMedia?.mediaDuration ? { mediaDuration: extraMedia.mediaDuration } : {}),
     ...(extraMedia?.mediaSize ? { mediaSize: extraMedia.mediaSize } : {}),
+    ...(extraMedia?.filename ? { filename: extraMedia.filename } : {}),
+    ...(extraMedia?.mediaSize ? { fileSize: extraMedia.mediaSize } : {}),
+    ...(extraMedia?.fileType ? { fileType: extraMedia.fileType } : {}),
     timestamp: serverTimestamp(),
     readBy: [senderId],
     reactions: {}

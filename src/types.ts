@@ -82,7 +82,10 @@ export interface ChatMessage {
   mediaThumbnail?: string;
   mediaDuration?: number;
   mediaSize?: number;
-  type: 'text' | 'image' | 'video' | 'audio' | 'system';
+  type: 'text' | 'image' | 'video' | 'audio' | 'system' | 'file';
+  filename?: string;
+  fileSize?: number;
+  fileType?: string;
   reactions?: { [uid: string]: string };
   timestamp: number | any;
   readBy?: string[];

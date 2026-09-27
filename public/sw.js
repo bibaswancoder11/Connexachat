@@ -152,7 +152,7 @@ self.addEventListener('fetch', (event) => {
             }
 
             if (hasMedia) {
-              redirectUrl = `./?share_intent=media&shared_id=${encodeURIComponent(shareId)}`;
+              redirectUrl = `./?share_intent=universal&shared_id=${encodeURIComponent(shareId)}`;
             } else {
               const searchParams = new URLSearchParams();
               searchParams.set('shared_id', shareId);

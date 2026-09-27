@@ -222,10 +222,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Firebase createUserWithEmailAndPassword failed or disabled:', authErr);
       if (
         authErr.code === 'auth/operation-not-allowed' || 
+        authErr.code === 'auth/configuration-not-found' ||
+        authErr.code === 'auth/admin-restricted-operation' ||
         authErr.message?.includes('operation-not-allowed') ||
-        authErr.message?.includes('network-request-failed')
+        authErr.message?.includes('network-request-failed') ||
+        authErr.message?.includes('CONFIGURATION_NOT_FOUND')
       ) {
-        // Fallback to local demo account when Email Auth is disabled in Firebase Console
+        // Fallback to local account when Email Auth is disabled in Firebase Console
         const localUid = `local_${email.toLowerCase().replace(/[^a-z0-9]/gi, '_')}`;
         const localUserObj = { uid: localUid, email, displayName: name };
         
@@ -285,8 +288,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Firebase signInWithEmailAndPassword failed or disabled:', authErr);
       if (
         authErr.code === 'auth/operation-not-allowed' || 
+        authErr.code === 'auth/configuration-not-found' ||
+        authErr.code === 'auth/admin-restricted-operation' ||
         authErr.message?.includes('operation-not-allowed') ||
-        authErr.message?.includes('network-request-failed')
+        authErr.message?.includes('network-request-failed') ||
+        authErr.message?.includes('CONFIGURATION_NOT_FOUND')
       ) {
         if (registeredAccount) {
           localStorage.setItem(DEMO_GUEST_KEY, JSON.stringify(registeredAccount));
@@ -294,8 +300,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setUserProfile(registeredAccount);
           return;
         } else {
-          throw new Error(`No account found registered with email '${email}'. Please click "Register" to create an account.`);
+          throw new Error(`No account found registered with email '${email}'. Please click "Create Account" to register.`);
         }
+      } else if (
+        (authErr.code === 'auth/invalid-credential' || 
+         authErr.code === 'auth/user-not-found' || 
+         authErr.code === 'auth/wrong-password') &&
+        registeredAccount &&
+        registeredAccount.uid.startsWith('local_')
+      ) {
+        localStorage.setItem(DEMO_GUEST_KEY, JSON.stringify(registeredAccount));
+        setCurrentUser({ uid: registeredAccount.uid, email: registeredAccount.email, displayName: registeredAccount.displayName } as User);
+        setUserProfile(registeredAccount);
+        return;
       } else {
         throw authErr;
       }

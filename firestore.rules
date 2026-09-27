@@ -2,26 +2,28 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    function isAuthenticated() {
-      return request.auth != null;
-    }
-
+    // Allow user profile reads and writes so account registration, 
+    // login lookups, email availability, and profile creation succeed
     match /users/{userId} {
       allow read, write: if true;
     }
 
+    // Allow username reservations and availability checks during signup
     match /usernames/{username} {
       allow read, write: if true;
     }
 
+    // Friend requests
     match /friendRequests/{requestId} {
       allow read, write: if true;
     }
 
+    // Friendships
     match /friends/{friendshipId} {
       allow read, write: if true;
     }
 
+    // Chats and nested messages
     match /chats/{chatId} {
       allow read, write: if true;
 
@@ -30,6 +32,7 @@ service cloud.firestore {
       }
     }
 
+    // WebRTC Calls and signaling candidates
     match /calls/{callId} {
       allow read, write: if true;
 
@@ -43,4 +46,3 @@ service cloud.firestore {
     }
   }
 }
-

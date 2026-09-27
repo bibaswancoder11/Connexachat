@@ -35,7 +35,8 @@ import {
   Phone,
   PhoneCall,
   Link as LinkIcon,
-  Globe
+  Globe,
+  FileText
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
@@ -71,6 +72,8 @@ import { VideoPlayerMessage } from './VideoPlayerMessage';
 import { AudioVoiceMessage } from './AudioVoiceMessage';
 import { ShareMediaModal } from './ShareMediaModal';
 import { ShareLinkModal } from './ShareLinkModal';
+import { EmojiPickerPopup } from './EmojiPickerPopup';
+import { getEmojiInfo } from '../utils/emojiUtils';
 import { 
   openUrlInBrowser, 
   normalizeUrl, 
@@ -148,6 +151,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [showShareLinkModal, setShowShareLinkModal] = useState(false);
   const [linkToShare, setLinkToShare] = useState<{ url: string; title?: string; text?: string } | null>(null);
+  const [showInputEmojiPicker, setShowInputEmojiPicker] = useState(false);
 
   const handleShareLink = async (url: string) => {
     if (navigator.share) {
@@ -163,6 +167,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textInputRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
@@ -228,6 +233,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setInputText(e.target.value);
     if (chat.id && userProfile && !isBlocked) {
       setTypingIndicator(chat.id, userProfile.uid, e.target.value.length > 0);
+    }
+  };
+
+  // Insert selected emoji at cursor position
+  const handleSelectEmoji = (emoji: string) => {
+    const input = textInputRef.current;
+    if (input) {
+      const start = input.selectionStart ?? inputText.length;
+      const end = input.selectionEnd ?? inputText.length;
+      const newText = inputText.substring(0, start) + emoji + inputText.substring(end);
+      setInputText(newText);
+      setTimeout(() => {
+        input.focus();
+        input.setSelectionRange(start + emoji.length, start + emoji.length);
+      }, 0);
+    } else {
+      setInputText(prev => prev + emoji);
+    }
+
+    if (chat.id && userProfile && !isBlocked) {
+      setTypingIndicator(chat.id, userProfile.uid, true);
+    }
+  };
+
+  // Quick 1-tap send directly for emojis
+  const handleQuickSendEmoji = async (emoji: string) => {
+    if (!userProfile || !chat.id || isBlocked) return;
+    setShowInputEmojiPicker(false);
+    try {
+      await sendMessage(chat.id, userProfile.uid, emoji, 'text', undefined, userProfile);
+    } catch (err) {
+      console.error('Error sending emoji message:', err);
     }
   };
 
@@ -360,6 +397,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setSelectedImage(null);
     setSelectedVideo(null);
     setShowAttachMenu(false);
+    setShowInputEmojiPicker(false);
     setTypingIndicator(chat.id, userProfile.uid, false);
 
     try {
@@ -554,18 +592,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
       )}
       
       {/* Top Chat Header */}
-      <div className="px-4 md:px-6 py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shadow-2xs z-10">
-        <div className="flex items-center gap-2 min-w-0">
+      <div className="px-2.5 sm:px-4 md:px-6 py-2.5 sm:py-3.5 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between shadow-2xs z-10 shrink-0">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 mr-2">
           {onBackToChats && (
             <button
               onClick={onBackToChats}
-              className="md:hidden p-2 -ml-2 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0"
+              className="md:hidden p-1.5 -ml-1 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
               title="Back to Chats"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
           )}
-          <div className="flex items-center gap-3.5 min-w-0">
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 flex-1">
             <EnlargeableAvatar
               src={avatarUrl}
               alt={title}
@@ -575,41 +613,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
               memberCount={chat.participants?.length}
               showStatusBadge={!isGroup}
               showGroupBadge={isGroup}
-              sizeClass="w-11 h-11 rounded-2xl"
+              sizeClass="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl shrink-0"
             />
 
             <div 
               onClick={() => isGroup && setShowGroupInfoModal(true)}
-              className={`min-w-0 ${isGroup ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+              className={`min-w-0 flex-1 ${isGroup ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
                 <h3 className="font-bold text-sm text-slate-900 dark:text-white truncate">
                   {title}
                 </h3>
                 {!isGroup && otherUser && (
-                  <span className="text-xs font-mono text-blue-600 dark:text-blue-400 font-semibold shrink-0">
-                    @{otherUser.username}{otherUser.userTag}
+                  <span className="text-[11px] font-mono text-blue-600 dark:text-blue-400 font-semibold shrink-0 hidden xs:inline">
+                    @{otherUser.username}
                   </span>
                 )}
               </div>
 
               {isGroup ? (
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium flex items-center gap-1 truncate">
                   <span>{chat.participants?.length || 0} members • Click for info</span>
                 </p>
               ) : isBlocked ? (
-                <p className="text-[11px] text-rose-500 font-medium flex items-center gap-1">
-                  <UserX className="w-3 h-3" />
-                  <span>Blocked on this device</span>
+                <p className="text-[11px] text-rose-500 font-medium flex items-center gap-1 truncate">
+                  <UserX className="w-3 h-3 shrink-0" />
+                  <span className="truncate">Blocked on this device</span>
                 </p>
               ) : isUserOnline(otherUser) ? (
                 <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
                   <span>Online</span>
                 </p>
               ) : (
                 <p className="text-[11px] text-slate-400 dark:text-slate-500 font-medium flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-400 shrink-0" />
                   <span>Offline</span>
                 </p>
               )}
@@ -618,7 +656,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Action icons */}
-        <div className="flex items-center gap-1 relative">
+        <div className="flex items-center gap-0.5 sm:gap-1 relative shrink-0">
           {/* 1-on-1 Free WebRTC Calling Buttons (Voice & Video) */}
           {!isGroup && otherUser && !isBlocked && (
             <>
@@ -854,6 +892,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
             const readCount = (msg.readBy || []).filter(u => u !== msg.senderId).length;
             const isSelected = selectedMessageId === msg.id;
 
+            const emojiInfo = getEmojiInfo(msg.text || '');
+            const isPureEmoji = emojiInfo.isOnlyEmojis && !msg.mediaUrl;
+            const isJumboEmoji = isPureEmoji && emojiInfo.count === 1;
+            const isLargeEmoji = isPureEmoji && emojiInfo.count > 1 && emojiInfo.count <= 3;
+            const isMediumEmoji = isPureEmoji && emojiInfo.count > 3 && emojiInfo.count <= 6;
+
             return (
               <div
                 key={msg.id}
@@ -875,7 +919,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {/* Message Bubble Container */}
                   <div
                     onClick={() => setSelectedMessageId(isSelected ? null : msg.id)}
-                    className={`relative p-3.5 rounded-2xl text-xs md:text-sm leading-relaxed space-y-1.5 cursor-pointer transition-all ${
+                    className={`relative ${
+                      isJumboEmoji
+                        ? 'p-2 sm:p-2.5'
+                        : isLargeEmoji
+                        ? 'p-2.5 sm:p-3'
+                        : 'p-3.5'
+                    } rounded-2xl text-xs md:text-sm leading-relaxed space-y-1.5 cursor-pointer transition-all ${
                       isSelected ? 'ring-2 ring-blue-500/90 dark:ring-blue-400/90 shadow-md scale-[1.01]' : 'shadow-2xs hover:shadow-xs'
                     } ${
                       isMe
@@ -949,49 +999,107 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     )}
 
-                    {/* Text Message with Clickable Links and Link Preview Cards */}
+                    {/* Document / File Attachment */}
+                    {msg.type === 'file' && msg.mediaUrl && (
+                      <div className="my-1">
+                        <div className={`p-3 rounded-2xl flex items-center justify-between gap-3 max-w-xs transition-all border ${
+                          isMe 
+                            ? 'bg-blue-700/60 border-blue-400/40 text-white' 
+                            : 'bg-slate-100 dark:bg-slate-700/70 border-slate-200 dark:border-slate-600 text-slate-900 dark:text-white'
+                        }`}>
+                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className={`p-2.5 rounded-xl shrink-0 ${
+                              isMe ? 'bg-white/20 text-white' : 'bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400'
+                            }`}>
+                              <FileText className="w-5 h-5" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <p className="font-semibold text-xs truncate" title={msg.filename || 'Document'}>
+                                {msg.filename || 'Document'}
+                              </p>
+                              {msg.fileSize && (
+                                <p className={`text-[10px] ${isMe ? 'text-blue-100' : 'text-slate-400'}`}>
+                                  {msg.fileSize > 1024 * 1024 
+                                    ? `${(msg.fileSize / (1024 * 1024)).toFixed(1)} MB` 
+                                    : `${Math.round(msg.fileSize / 1024)} KB`}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                          <a
+                            href={msg.mediaUrl}
+                            download={msg.filename || `document-${Date.now()}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className={`p-2 rounded-xl shrink-0 transition-colors cursor-pointer ${
+                              isMe 
+                                ? 'bg-white/20 hover:bg-white/30 text-white' 
+                                : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
+                            }`}
+                            title="Download document"
+                          >
+                            <Download className="w-4 h-4" />
+                          </a>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Text / Emoji Message with Clickable Links and Link Preview Cards */}
                     {msg.text && (
                       <div className="space-y-2">
-                        <p className="whitespace-pre-wrap break-words">
-                          {(() => {
-                            const parts = msg.text.split(URL_REGEX);
-                            const matches = msg.text.match(URL_REGEX) || [];
-                            const rendered: React.ReactNode[] = [];
-                            
-                            let matchIdx = 0;
-                            parts.forEach((part, i) => {
-                              if (part) {
-                                rendered.push(<span key={`text-${i}`}>{part}</span>);
-                              }
-                              if (matchIdx < matches.length) {
-                                const matchedUrl = matches[matchIdx];
-                                const cleanUrl = normalizeUrl(matchedUrl);
-                                rendered.push(
-                                  <a
-                                    key={`link-${matchIdx}`}
-                                    href={cleanUrl}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                    }}
-                                    className={`underline font-medium break-all cursor-pointer hover:opacity-80 transition-opacity ${
-                                      isMe ? 'text-white font-semibold underline' : 'text-blue-600 dark:text-blue-400 font-semibold'
-                                    }`}
-                                    title={`Click to open ${cleanUrl}`}
-                                  >
-                                    {matchedUrl}
-                                  </a>
-                                );
-                                matchIdx++;
-                              }
-                            });
-                            return rendered;
-                          })()}
-                        </p>
+                        {isJumboEmoji ? (
+                          <div className="text-5xl sm:text-6xl py-1 px-1 leading-none select-none tracking-normal animate-in zoom-in-75 duration-150">
+                            {msg.text}
+                          </div>
+                        ) : isLargeEmoji ? (
+                          <div className="text-3xl sm:text-4xl py-0.5 px-0.5 leading-snug select-none animate-in zoom-in-90 duration-150">
+                            {msg.text}
+                          </div>
+                        ) : isMediumEmoji ? (
+                          <div className="text-2xl sm:text-3xl py-0.5 px-0.5 leading-normal select-none">
+                            {msg.text}
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap break-words">
+                            {(() => {
+                              const parts = msg.text.split(URL_REGEX);
+                              const matches = msg.text.match(URL_REGEX) || [];
+                              const rendered: React.ReactNode[] = [];
+                              
+                              let matchIdx = 0;
+                              parts.forEach((part, i) => {
+                                if (part) {
+                                  rendered.push(<span key={`text-${i}`}>{part}</span>);
+                                }
+                                if (matchIdx < matches.length) {
+                                  const matchedUrl = matches[matchIdx];
+                                  const cleanUrl = normalizeUrl(matchedUrl);
+                                  rendered.push(
+                                    <a
+                                      key={`link-${matchIdx}`}
+                                      href={cleanUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                      }}
+                                      className={`underline font-medium break-all cursor-pointer hover:opacity-80 transition-opacity ${
+                                        isMe ? 'text-white font-semibold underline' : 'text-blue-600 dark:text-blue-400 font-semibold'
+                                      }`}
+                                      title={`Click to open ${cleanUrl}`}
+                                    >
+                                      {matchedUrl}
+                                    </a>
+                                  );
+                                  matchIdx++;
+                                }
+                              });
+                              return rendered;
+                            })()}
+                          </p>
+                        )}
 
                         {/* Interactive Link Card for messages containing links */}
-                        {(() => {
+                        {!isPureEmoji && (() => {
                           const urls = extractUrlsFromText(msg.text);
                           if (urls.length === 0) return null;
                           const firstUrl = urls[0];
@@ -1251,11 +1359,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </button>
         </div>
       ) : (
-        <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 relative">
+        <div className="p-2 sm:p-3 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 relative w-full shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           
+          {/* Emoji Picker Popup (anchored to container so it never overflows screen bounds) */}
+          {showInputEmojiPicker && (
+            <EmojiPickerPopup
+              onSelectEmoji={handleSelectEmoji}
+              onSendEmoji={handleQuickSendEmoji}
+              onClose={() => setShowInputEmojiPicker(false)}
+            />
+          )}
+
           {/* Media Attach Menu Popover */}
           {showAttachMenu && (
-            <div className="absolute left-4 bottom-full mb-2 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-2 flex gap-2 z-30 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            <div className="absolute right-3 sm:right-auto sm:left-14 bottom-full mb-2 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700 p-2 flex gap-2 z-30 animate-in fade-in slide-in-from-bottom-2 duration-150">
               <button
                 type="button"
                 onClick={() => {
@@ -1320,7 +1437,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleSendMessage} onPaste={handlePaste} className="flex items-center gap-2">
+          <form onSubmit={handleSendMessage} onPaste={handlePaste} className="flex items-center gap-1.5 sm:gap-2 w-full max-w-full">
             
             {/* Hidden File inputs */}
             <input
@@ -1352,23 +1469,61 @@ export const ChatView: React.FC<ChatViewProps> = ({
               className="hidden"
             />
 
-            {/* Media Attachment Toggle */}
-            <button
-              type="button"
-              onClick={() => setShowAttachMenu(!showAttachMenu)}
-              disabled={isProcessingMedia}
-              className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
-              title="Attach photo or video"
-            >
-              <ImageIcon className="w-5 h-5" />
-            </button>
+            {/* Unified WhatsApp-Style Capsule (Emoji + Input + Attachment) */}
+            <div className="flex-1 min-w-0 flex items-center bg-slate-100 dark:bg-slate-800/90 rounded-2xl border border-transparent dark:border-slate-700/80 px-1.5 sm:px-2.5 transition-all focus-within:ring-2 focus-within:ring-blue-500/30">
+              
+              {/* Emoji Picker Toggle Button inside input */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowInputEmojiPicker(!showInputEmojiPicker);
+                  setShowAttachMenu(false);
+                }}
+                className={`p-1.5 sm:p-2 rounded-xl transition-colors shrink-0 cursor-pointer ${
+                  showInputEmojiPicker
+                    ? 'text-blue-600 dark:text-blue-400'
+                    : 'text-slate-400 hover:text-blue-600 dark:hover:text-blue-400'
+                }`}
+                title="Insert emoji message"
+              >
+                <Smile className="w-5 h-5" />
+              </button>
+
+              {/* Text input - min-w-0 guarantees proper flexbox shrinking on all mobile viewports */}
+              <input
+                ref={textInputRef}
+                type="text"
+                value={inputText}
+                onChange={handleInputChange}
+                placeholder={isGroup ? `Message ${title}...` : `Message ${title}...`}
+                className="flex-1 min-w-0 py-2 sm:py-2.5 px-1.5 sm:px-2 bg-transparent border-none text-xs md:text-sm focus:outline-hidden text-slate-900 dark:text-white placeholder:text-slate-400"
+              />
+
+              {/* Media Attachment Toggle inside input */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAttachMenu(!showAttachMenu);
+                  setShowInputEmojiPicker(false);
+                }}
+                disabled={isProcessingMedia}
+                className={`p-1.5 sm:p-2 rounded-xl transition-colors disabled:opacity-50 shrink-0 cursor-pointer ${
+                  showAttachMenu
+                    ? 'text-blue-600 dark:text-blue-400'
+                    : 'text-slate-400 hover:text-blue-600 dark:hover:text-blue-400'
+                }`}
+                title="Attach photo or video"
+              >
+                <ImageIcon className="w-5 h-5" />
+              </button>
+            </div>
 
             {/* Voice Note Button */}
             {!isRecording ? (
               <button
                 type="button"
                 onClick={startRecording}
-                className="p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 sm:p-2.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors shrink-0 cursor-pointer"
                 title="Record Voice Note"
               >
                 <Mic className="w-5 h-5" />
@@ -1377,27 +1532,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={stopRecording}
-                className="px-3 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 animate-pulse"
+                className="px-2.5 py-1.5 bg-rose-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1 animate-pulse shrink-0 cursor-pointer"
               >
                 <Square className="w-3.5 h-3.5" />
-                <span>{recordingTime}s (Tap to send)</span>
+                <span>{recordingTime}s</span>
               </button>
             )}
 
-            {/* Text input */}
-            <input
-              type="text"
-              value={inputText}
-              onChange={handleInputChange}
-              placeholder={isGroup ? `Message ${title}...` : `Message ${title}...`}
-              className="flex-1 py-3 px-4 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700 rounded-2xl text-xs md:text-sm focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 text-slate-900 dark:text-white"
-            />
-
-            {/* Send button */}
+            {/* Send button - Always prominently visible and never pushed offscreen */}
             <button
               type="submit"
               disabled={(!inputText.trim() && !selectedImage && !selectedVideo) || isProcessingMedia}
-              className="p-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl shadow-md shadow-blue-600/20 transition-all disabled:opacity-40 disabled:shadow-none"
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-2xl flex items-center justify-center shrink-0 transition-all cursor-pointer ${
+                inputText.trim() || selectedImage || selectedVideo
+                  ? 'bg-blue-600 hover:bg-blue-700 text-white shadow-md shadow-blue-600/25 active:scale-95'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-400 opacity-50 cursor-not-allowed shadow-none'
+              }`}
               title="Send Message"
             >
               <Send className="w-4 h-4" />

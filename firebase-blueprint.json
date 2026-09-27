@@ -1,8 +1,11 @@
 {
   "entities": {
     "users": {
-      "fields": {
-        "uid": { "type": "string", "description": "User's unique Firebase Auth ID" },
+      "title": "User Profile",
+      "description": "User profile with display information, handle, and settings",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User unique ID" },
         "displayName": { "type": "string", "description": "Display name of the user" },
         "username": { "type": "string", "description": "Unique handle/username (lowercased)" },
         "userTag": { "type": "string", "description": "Unique numeric tag like #1042" },
@@ -10,19 +13,27 @@
         "photoURL": { "type": "string", "description": "Profile picture URL or Base64 data" },
         "bio": { "type": "string", "description": "User bio or tagline" },
         "status": { "type": "string", "description": "Online status: online, offline, away" },
-        "lastSeen": { "type": "timestamp", "description": "Last activity timestamp" },
-        "createdAt": { "type": "timestamp", "description": "Account creation time" },
-        "pushTokens": { "type": "map", "description": "Map of FCM Android device push tokens" },
-        "pushSubscriptions": { "type": "map", "description": "Map of Web Push browser subscriptions" }
-      }
+        "lastSeen": { "type": "string", "description": "Last activity timestamp" },
+        "createdAt": { "type": "string", "description": "Account creation time" },
+        "pushTokens": { "type": "object", "description": "Map of FCM Android device push tokens" },
+        "pushSubscriptions": { "type": "object", "description": "Map of Web Push browser subscriptions" }
+      },
+      "required": ["uid", "username"]
     },
     "usernames": {
-      "fields": {
+      "title": "Username Reservation",
+      "description": "Mapping from reserved username to user UID",
+      "type": "object",
+      "properties": {
         "uid": { "type": "string", "description": "UID associated with reserved username" }
-      }
+      },
+      "required": ["uid"]
     },
     "friendRequests": {
-      "fields": {
+      "title": "Friend Request",
+      "description": "Friend request between two users",
+      "type": "object",
+      "properties": {
         "id": { "type": "string", "description": "fromUid_toUid request ID" },
         "fromUid": { "type": "string", "description": "Sender User ID" },
         "fromUsername": { "type": "string", "description": "Sender username" },
@@ -31,19 +42,27 @@
         "toUid": { "type": "string", "description": "Recipient User ID" },
         "toUsername": { "type": "string", "description": "Recipient username" },
         "status": { "type": "string", "description": "Request status: pending, accepted, rejected" },
-        "createdAt": { "type": "timestamp", "description": "Request creation timestamp" }
-      }
+        "createdAt": { "type": "string", "description": "Request creation timestamp" }
+      },
+      "required": ["fromUid", "toUid", "status"]
     },
     "friends": {
-      "fields": {
+      "title": "Friendship",
+      "description": "Friend relationship between two users",
+      "type": "object",
+      "properties": {
         "id": { "type": "string", "description": "Sorted pair ID uidA_uidB" },
         "users": { "type": "array", "description": "Array of 2 user IDs" },
-        "createdAt": { "type": "timestamp", "description": "Friendship establishment timestamp" }
-      }
+        "createdAt": { "type": "string", "description": "Friendship establishment timestamp" }
+      },
+      "required": ["users"]
     },
     "chats": {
-      "fields": {
-        "id": { "type": "string", "description": "Chat room ID (sorted pair uidA_uidB or auto-generated for group)" },
+      "title": "Chat Room",
+      "description": "Direct or group chat conversation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Chat room ID" },
         "participants": { "type": "array", "description": "Array of participant user IDs" },
         "isGroup": { "type": "boolean", "description": "Whether this is a group chat" },
         "groupName": { "type": "string", "description": "Name of the group chat" },
@@ -52,14 +71,18 @@
         "createdBy": { "type": "string", "description": "UID of group creator" },
         "lastMessage": { "type": "string", "description": "Preview snippet of last message" },
         "lastMessageSenderId": { "type": "string", "description": "User ID of last sender" },
-        "lastMessageTime": { "type": "timestamp", "description": "Timestamp of last message" },
-        "updatedAt": { "type": "timestamp", "description": "Chat update timestamp" },
-        "unreadCounts": { "type": "map", "description": "Map of unread message counts per user UID" },
-        "typing": { "type": "map", "description": "Map of typing indicators per user UID" }
-      }
+        "lastMessageTime": { "type": "string", "description": "Timestamp of last message" },
+        "updatedAt": { "type": "string", "description": "Chat update timestamp" },
+        "unreadCounts": { "type": "object", "description": "Map of unread message counts per user UID" },
+        "typing": { "type": "object", "description": "Map of typing indicators per user UID" }
+      },
+      "required": ["participants"]
     },
-    "chats/{chatId}/messages": {
-      "fields": {
+    "messages": {
+      "title": "Chat Message",
+      "description": "Individual message in a chat conversation",
+      "type": "object",
+      "properties": {
         "id": { "type": "string", "description": "Unique message ID" },
         "chatId": { "type": "string", "description": "Parent chat ID" },
         "senderId": { "type": "string", "description": "Sender user ID" },
@@ -68,13 +91,17 @@
         "text": { "type": "string", "description": "Text message content" },
         "mediaUrl": { "type": "string", "description": "Optional image/voice data URL" },
         "type": { "type": "string", "description": "Message type: text, image, audio, system" },
-        "reactions": { "type": "map", "description": "Reactions map { [uid]: emoji }" },
-        "timestamp": { "type": "timestamp", "description": "Message sent timestamp" },
+        "reactions": { "type": "object", "description": "Reactions map { [uid]: emoji }" },
+        "timestamp": { "type": "string", "description": "Message sent timestamp" },
         "readBy": { "type": "array", "description": "Array of user IDs who read the message" }
-      }
+      },
+      "required": ["chatId", "senderId"]
     },
     "calls": {
-      "fields": {
+      "title": "Call Session",
+      "description": "WebRTC audio or video call session",
+      "type": "object",
+      "properties": {
         "id": { "type": "string", "description": "Unique call session ID" },
         "chatId": { "type": "string", "description": "Associated chat ID" },
         "type": { "type": "string", "description": "Call type: audio or video" },
@@ -85,13 +112,52 @@
         "recipientName": { "type": "string", "description": "Display name of the recipient" },
         "recipientAvatar": { "type": "string", "description": "Avatar photo URL of recipient" },
         "status": { "type": "string", "description": "Call status: ringing, connected, rejected, ended, missed" },
-        "offer": { "type": "map", "description": "WebRTC offer SDP description" },
-        "answer": { "type": "map", "description": "WebRTC answer SDP description" },
-        "createdAt": { "type": "timestamp", "description": "Call initiation timestamp" },
-        "connectedAt": { "type": "timestamp", "description": "Call answer/connection timestamp" },
-        "endedAt": { "type": "timestamp", "description": "Call completion timestamp" },
+        "offer": { "type": "object", "description": "WebRTC offer SDP description" },
+        "answer": { "type": "object", "description": "WebRTC answer SDP description" },
+        "createdAt": { "type": "string", "description": "Call initiation timestamp" },
+        "connectedAt": { "type": "string", "description": "Call answer/connection timestamp" },
+        "endedAt": { "type": "string", "description": "Call completion timestamp" },
         "durationSeconds": { "type": "number", "description": "Total call duration in seconds" }
-      }
+      },
+      "required": ["callerUid", "recipientUid", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/users" },
+      "description": "User profiles collection"
+    },
+    "/usernames/{username}": {
+      "schema": { "$ref": "#/entities/usernames" },
+      "description": "Reserved usernames mapping"
+    },
+    "/friendRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/friendRequests" },
+      "description": "Pending and past friend requests"
+    },
+    "/friends/{friendshipId}": {
+      "schema": { "$ref": "#/entities/friends" },
+      "description": "Confirmed friendships collection"
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/chats" },
+      "description": "Direct and group chat rooms"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/messages" },
+      "description": "Messages subcollection within a chat"
+    },
+    "/calls/{callId}": {
+      "schema": { "$ref": "#/entities/calls" },
+      "description": "WebRTC calls and signaling"
+    },
+    "/calls/{callId}/callerCandidates/{candidateId}": {
+      "schema": { "type": "object" },
+      "description": "WebRTC ICE candidates from caller"
+    },
+    "/calls/{callId}/recipientCandidates/{candidateId}": {
+      "schema": { "type": "object" },
+      "description": "WebRTC ICE candidates from recipient"
     }
   }
 }

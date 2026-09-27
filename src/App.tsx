@@ -17,7 +17,8 @@ import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 import { ShareMediaModal, SharedMediaItem } from './components/ShareMediaModal';
 import { ShareLinkModal } from './components/ShareLinkModal';
-import { initShareTargetListener, subscribeToShareIntents, subscribeToLinkShareIntents, SharedLinkPayload } from './utils/apkIntentHandler';
+import { UniversalShareModal, UniversalSharePayload } from './components/UniversalShareModal';
+import { initShareTargetListener, subscribeToUniversalShareIntents, subscribeToShareIntents, subscribeToLinkShareIntents, SharedLinkPayload } from './utils/apkIntentHandler';
 import { IncomingCallBanner } from './components/IncomingCallBanner';
 import { CallModal } from './components/CallModal';
 import { CallSession, CallType } from './types';
@@ -42,6 +43,7 @@ const ConnexaApp: React.FC = () => {
   const [friends, setFriends] = useState<UserProfile[]>([]);
 
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [universalSharePayload, setUniversalSharePayload] = useState<UniversalSharePayload | null>(null);
   const [sharedMediaPayload, setSharedMediaPayload] = useState<{ items: SharedMediaItem[]; text?: string } | null>(null);
   const [sharedLinkPayload, setSharedLinkPayload] = useState<SharedLinkPayload | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
@@ -61,6 +63,9 @@ const ConnexaApp: React.FC = () => {
   const knownIncomingReqIdsRef = useRef<Set<string> | null>(null);
 
   // Keep refs for active modals to handle mobile back button cancellation
+  const universalSharePayloadRef = useRef(universalSharePayload);
+  universalSharePayloadRef.current = universalSharePayload;
+
   const sharedMediaPayloadRef = useRef(sharedMediaPayload);
   sharedMediaPayloadRef.current = sharedMediaPayload;
 
@@ -78,22 +83,27 @@ const ConnexaApp: React.FC = () => {
     if (Capacitor.isNativePlatform()) {
       let removeListener: (() => void) | null = null;
       CapApp.addListener('backButton', ({ canGoBack }) => {
-        // 1. If share link modal is open, cancel it
+        // 1. If universal share modal is open, cancel it
+        if (universalSharePayloadRef.current) {
+          setUniversalSharePayload(null);
+          return;
+        }
+        // 2. If share link modal is open, cancel it
         if (sharedLinkPayloadRef.current) {
           setSharedLinkPayload(null);
           return;
         }
-        // 2. If share media modal is open, cancel it
+        // 3. If share media modal is open, cancel it
         if (sharedMediaPayloadRef.current) {
           setSharedMediaPayload(null);
           return;
         }
-        // 3. If create group modal is open, cancel it
+        // 4. If create group modal is open, cancel it
         if (showCreateGroupModalRef.current) {
           setShowCreateGroupModal(false);
           return;
         }
-        // 4. If active chat is open on mobile screen, go back to chats list
+        // 5. If active chat is open on mobile screen, go back to chats list
         if (activeChatIdRef.current) {
           setActiveChatId(null);
           return;
@@ -118,6 +128,13 @@ const ConnexaApp: React.FC = () => {
     initServiceWorker();
     initShareTargetListener();
 
+    // Universal WhatsApp-style Share Listener (Links, Documents, Photos, Videos, Text)
+    const unsubUniversal = subscribeToUniversalShareIntents((payload) => {
+      if (payload) {
+        setUniversalSharePayload(payload);
+      }
+    });
+
     const unsubShare = subscribeToShareIntents((payload) => {
       if (payload && (payload.items.length > 0 || payload.text)) {
         setSharedMediaPayload(payload);
@@ -131,6 +148,7 @@ const ConnexaApp: React.FC = () => {
     });
 
     return () => {
+      unsubUniversal();
       unsubShare();
       unsubLinkShare();
     };
@@ -671,7 +689,30 @@ const ConnexaApp: React.FC = () => {
           />
         )}
 
-        {/* Multi-Recipient / Native Share Target Media Modal */}
+        {/* WhatsApp-Style Universal Multi-Recipient Share Target Modal (Links, Documents, Photos, Videos, Text) */}
+        {universalSharePayload && userProfile && (
+          <UniversalShareModal
+            currentUser={userProfile}
+            friends={friends}
+            chats={chats}
+            payload={universalSharePayload}
+            onClose={() => setUniversalSharePayload(null)}
+            onSuccess={(chatIds) => {
+              setUniversalSharePayload(null);
+              setToastNotification({
+                id: Date.now().toString(),
+                title: 'Sent Successfully',
+                body: `Shared to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
+              });
+              if (chatIds && chatIds.length === 1) {
+                setActiveChatId(chatIds[0]);
+                setActiveTab('chats');
+              }
+            }}
+          />
+        )}
+
+        {/* Multi-Recipient / Native Share Target Media Modal (Legacy fallback) */}
         {sharedMediaPayload && userProfile && (
           <ShareMediaModal
             currentUser={userProfile}

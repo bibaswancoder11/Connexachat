@@ -1,10 +1,12 @@
 /**
  * APK & Web Share Target Intent Handler for Connexa
- * Handles incoming shared media (photos, videos, text) from Android native share sheet,
+ * Handles incoming shared items (links, documents, photos, videos, text) from Android native share sheet,
  * Web Share Target API, or file drag-and-drop.
  */
 
 import { SharedMediaItem } from '../components/ShareMediaModal';
+import { UniversalSharePayload, UniversalShareItem } from '../components/UniversalShareModal';
+export type { UniversalSharePayload, UniversalShareItem };
 import { compressImage } from './imageUtils';
 import { processVideoFile } from './mediaUtils';
 import { Capacitor } from '@capacitor/core';
@@ -23,6 +25,47 @@ export interface SharedLinkPayload {
   source?: 'android-share-sheet' | 'web-share-target' | 'query-param' | 'in-app';
 }
 
+// 1. Universal Share Listener (WhatsApp-Style Unified Share Target)
+type UniversalShareListener = (payload: UniversalSharePayload) => void;
+const universalListeners: Set<UniversalShareListener> = new Set();
+let pendingUniversalPayload: UniversalSharePayload | null = null;
+
+export function subscribeToUniversalShareIntents(listener: UniversalShareListener): () => void {
+  universalListeners.add(listener);
+  if (pendingUniversalPayload) {
+    listener(pendingUniversalPayload);
+    pendingUniversalPayload = null;
+  }
+  return () => {
+    universalListeners.delete(listener);
+  };
+}
+
+export function notifyUniversalShareIntent(payload: UniversalSharePayload) {
+  if (universalListeners.size === 0) {
+    pendingUniversalPayload = payload;
+  } else {
+    universalListeners.forEach(l => l(payload));
+  }
+
+  // Also bridge to legacy listeners for backward compatibility
+  if (payload.type === 'link' && payload.url) {
+    legacyNotifyLinkShare({
+      url: payload.url,
+      title: payload.title,
+      text: payload.caption || payload.text,
+      source: (payload.source as any) || 'android-share-sheet'
+    });
+  } else if ((payload.type === 'media' || payload.type === 'file') && payload.items) {
+    legacyNotifyMediaShare({
+      items: payload.items as any,
+      text: payload.caption || payload.text,
+      source: (payload.source as any) || 'android-share-sheet'
+    });
+  }
+}
+
+// 2. Legacy Media Listeners
 type ShareIntentListener = (payload: PendingSharePayload) => void;
 const listeners: Set<ShareIntentListener> = new Set();
 let pendingPayload: PendingSharePayload | null = null;
@@ -38,7 +81,7 @@ export function subscribeToShareIntents(listener: ShareIntentListener): () => vo
   };
 }
 
-export function notifyShareIntent(payload: PendingSharePayload) {
+function legacyNotifyMediaShare(payload: PendingSharePayload) {
   if (listeners.size === 0) {
     pendingPayload = payload;
   } else {
@@ -46,6 +89,19 @@ export function notifyShareIntent(payload: PendingSharePayload) {
   }
 }
 
+export function notifyShareIntent(payload: PendingSharePayload) {
+  legacyNotifyMediaShare(payload);
+  const isVideo = payload.items.some(i => i.type === 'video');
+  notifyUniversalShareIntent({
+    type: isVideo || payload.items.length > 0 ? 'media' : 'text',
+    items: payload.items as any,
+    caption: payload.text,
+    text: payload.text,
+    source: payload.source
+  });
+}
+
+// 3. Legacy Link Listeners
 type LinkShareIntentListener = (payload: SharedLinkPayload) => void;
 const linkListeners: Set<LinkShareIntentListener> = new Set();
 let pendingLinkPayload: SharedLinkPayload | null = null;
@@ -61,12 +117,24 @@ export function subscribeToLinkShareIntents(listener: LinkShareIntentListener): 
   };
 }
 
-export function notifyLinkShareIntent(payload: SharedLinkPayload) {
+function legacyNotifyLinkShare(payload: SharedLinkPayload) {
   if (linkListeners.size === 0) {
     pendingLinkPayload = payload;
   } else {
     linkListeners.forEach(l => l(payload));
   }
+}
+
+export function notifyLinkShareIntent(payload: SharedLinkPayload) {
+  legacyNotifyLinkShare(payload);
+  notifyUniversalShareIntent({
+    type: 'link',
+    url: payload.url,
+    title: payload.title,
+    caption: payload.text,
+    text: payload.text,
+    source: payload.source
+  });
 }
 
 /**
@@ -84,10 +152,10 @@ export function extractUrlAndCaption(rawText: string): { url: string; caption: s
 }
 
 /**
- * Handle incoming files (from Android WebView file intent, drag-drop, or input)
+ * Handle incoming files (photos, videos, documents/PDFs, audio)
  */
-export async function processIncomingFilesForSharing(files: FileList | File[]): Promise<SharedMediaItem[]> {
-  const items: SharedMediaItem[] = [];
+export async function processIncomingFilesForSharing(files: FileList | File[]): Promise<UniversalShareItem[]> {
+  const items: UniversalShareItem[] = [];
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
@@ -97,7 +165,9 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
         items.push({
           type: 'image',
           dataUrl: compressed,
-          filename: file.name
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type
         });
       } else if (file.type.startsWith('video/')) {
         const meta = await processVideoFile(file);
@@ -106,7 +176,24 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
           dataUrl: meta.dataUrl,
           thumbnailUrl: meta.thumbnailUrl,
           duration: meta.duration,
-          filename: file.name
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type
+        });
+      } else {
+        // Document / PDF / Audio / Archive / Any file
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(file);
+        });
+        items.push({
+          type: 'file',
+          dataUrl,
+          filename: file.name,
+          size: file.size,
+          mimeType: file.type || 'application/octet-stream'
         });
       }
     } catch (err) {
@@ -139,7 +226,7 @@ function openShareDb(): Promise<IDBDatabase> {
  */
 export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
   id: string;
-  type: 'media' | 'link';
+  type: 'media' | 'link' | 'file';
   title?: string;
   text?: string;
   url?: string;
@@ -195,81 +282,104 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
 let isInitialized = false;
 
 /**
- * Process any pending share from IndexedDB or URL parameters
+ * Process any pending share from Android intent, IndexedDB, or URL parameters
  */
 export async function checkPendingShareTargets() {
   if (typeof window === 'undefined') return;
 
   try {
-    // 0. Check localStorage (for native Android APK cold launch or background intent)
-    try {
-      const rawStored = localStorage.getItem('connexa_pending_share_link');
-      if (rawStored) {
-        localStorage.removeItem('connexa_pending_share_link');
-        let parsed: any = null;
-        try {
-          parsed = JSON.parse(rawStored);
-        } catch {
-          parsed = { text: rawStored };
+    // 0. Check localStorage for universal share payload
+    const rawUniversal = localStorage.getItem('connexa_pending_universal_share');
+    if (rawUniversal) {
+      localStorage.removeItem('connexa_pending_universal_share');
+      try {
+        const parsed = JSON.parse(rawUniversal);
+        if (parsed) {
+          notifyUniversalShareIntent(parsed);
+          return;
         }
-        let url = parsed.url || '';
-        let text = parsed.text || '';
-        let title = parsed.title || '';
-        if (!url && text) {
-          const extracted = extractUrlAndCaption(text);
-          if (extracted) {
-            url = extracted.url;
-            text = extracted.caption;
-          }
-        }
-        if (url) {
-          notifyLinkShareIntent({
-            url,
-            title: title || undefined,
-            text: text || undefined,
-            source: 'android-share-sheet'
-          });
-        }
+      } catch (e) {
+        console.warn('Error parsing connexa_pending_universal_share:', e);
       }
+    }
 
-      // Check media pending share from external apps/Android intent
-      const rawMediaStored = localStorage.getItem('connexa_pending_share_media');
-      if (rawMediaStored) {
-        localStorage.removeItem('connexa_pending_share_media');
-        let parsedMedia: any = null;
-        try {
-          parsedMedia = JSON.parse(rawMediaStored);
-        } catch {
-          parsedMedia = null;
-        }
-        if (parsedMedia && (Array.isArray(parsedMedia.items) || parsedMedia.text)) {
-          notifyShareIntent({
-            items: parsedMedia.items || [],
-            text: parsedMedia.text || undefined,
-            source: 'android-share-sheet'
-          });
+    // Check localStorage for link
+    const rawStored = localStorage.getItem('connexa_pending_share_link');
+    if (rawStored) {
+      localStorage.removeItem('connexa_pending_share_link');
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(rawStored);
+      } catch {
+        parsed = { text: rawStored };
+      }
+      let url = parsed.url || '';
+      let text = parsed.text || '';
+      let title = parsed.title || '';
+      if (!url && text) {
+        const extracted = extractUrlAndCaption(text);
+        if (extracted) {
+          url = extracted.url;
+          text = extracted.caption;
         }
       }
-    } catch (e) {
-      // ignore
+      if (url) {
+        notifyUniversalShareIntent({
+          type: 'link',
+          url,
+          title: title || undefined,
+          caption: text || undefined,
+          text: text || undefined,
+          source: 'android-share-sheet'
+        });
+        return;
+      }
+    }
+
+    // Check localStorage for media
+    const rawMediaStored = localStorage.getItem('connexa_pending_share_media');
+    if (rawMediaStored) {
+      localStorage.removeItem('connexa_pending_share_media');
+      let parsedMedia: any = null;
+      try {
+        parsedMedia = JSON.parse(rawMediaStored);
+      } catch {
+        parsedMedia = null;
+      }
+      if (parsedMedia && (Array.isArray(parsedMedia.items) || parsedMedia.text)) {
+        notifyUniversalShareIntent({
+          type: 'media',
+          items: parsedMedia.items || [],
+          caption: parsedMedia.text,
+          text: parsedMedia.text,
+          source: 'android-share-sheet'
+        });
+        return;
+      }
     }
 
     const params = new URLSearchParams(window.location.search);
     const sharedId = params.get('shared_id');
     const shareIntent = params.get('share_intent');
 
-    // 1. Check IndexedDB if shared_id or share_intent=media exists
-    if (sharedId || shareIntent === 'media') {
+    // 1. Check IndexedDB if shared_id or share_intent exists
+    if (sharedId || shareIntent === 'media' || shareIntent === 'universal') {
       const record = await fetchAndClearSharedRecord(sharedId || undefined);
       if (record) {
-        if (record.type === 'media' && record.files && record.files.length > 0) {
+        if (record.files && record.files.length > 0) {
           const items = await processIncomingFilesForSharing(record.files);
+          const hasImagesOrVideos = items.some(i => i.type === 'image' || i.type === 'video');
+          const finalType = hasImagesOrVideos ? 'media' : (items.some(i => i.type === 'file') ? 'file' : 'media');
+
           if (items.length > 0 || record.text) {
-            notifyShareIntent({
+            notifyUniversalShareIntent({
+              type: finalType,
               items,
+              caption: record.text,
               text: record.text,
               source: 'web-share-target'
             });
+            return;
           }
         } else if (record.url || record.text) {
           let url = record.url || '';
@@ -282,18 +392,29 @@ export async function checkPendingShareTargets() {
             }
           }
           if (url) {
-            notifyLinkShareIntent({
+            notifyUniversalShareIntent({
+              type: 'link',
               url,
               title: record.title,
+              caption: text,
               text,
               source: 'web-share-target'
             });
+            return;
+          } else if (text) {
+            notifyUniversalShareIntent({
+              type: 'text',
+              caption: text,
+              text,
+              source: 'web-share-target'
+            });
+            return;
           }
         }
       }
     }
 
-    // 2. Check URL query parameters (links/text directly passed via GET or SW redirect)
+    // 2. Check URL query parameters
     const sharedUrl = params.get('shared_url') || params.get('url') || params.get('link');
     const sharedText = params.get('shared_text') || params.get('text');
     const sharedTitle = params.get('shared_title') || params.get('title');
@@ -311,16 +432,25 @@ export async function checkPendingShareTargets() {
       }
 
       if (finalUrl) {
-        notifyLinkShareIntent({
+        notifyUniversalShareIntent({
+          type: 'link',
           url: finalUrl,
           title: sharedTitle || undefined,
+          caption: finalText || undefined,
           text: finalText || undefined,
+          source: 'query-param'
+        });
+      } else if (finalText) {
+        notifyUniversalShareIntent({
+          type: 'text',
+          caption: finalText,
+          text: finalText,
           source: 'query-param'
         });
       }
     }
 
-    // Clean URL parameters to prevent re-opening on manual page refresh
+    // Clean URL parameters
     if (sharedId || shareIntent || sharedUrl || sharedText || sharedTitle) {
       const cleanUrl = new URL(window.location.href);
       cleanUrl.searchParams.delete('shared_id');
@@ -341,7 +471,7 @@ export async function checkPendingShareTargets() {
 }
 
 /**
- * Initialize listeners for Web Share Target (ServiceWorker postMessage, IndexedDB, or URL query params)
+ * Initialize listeners for Web Share Target & Android intents
  */
 export function initShareTargetListener() {
   if (typeof window === 'undefined') return;
@@ -368,17 +498,18 @@ export function initShareTargetListener() {
   // 3. Listen for Service Worker postMessage
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', async (event) => {
-      if (event.data?.type === 'WEB_SHARE_TARGET_MEDIA') {
+      if (event.data?.type === 'WEB_SHARE_TARGET_MEDIA' || event.data?.type === 'WEB_SHARE_TARGET_FILE') {
         const { files, text, shareId } = event.data;
         if (files && files.length > 0) {
           const items = await processIncomingFilesForSharing(files);
-          if (items.length > 0 || text) {
-            notifyShareIntent({
-              items,
-              text,
-              source: 'web-share-target'
-            });
-          }
+          const hasImagesOrVideos = items.some(i => i.type === 'image' || i.type === 'video');
+          notifyUniversalShareIntent({
+            type: hasImagesOrVideos ? 'media' : 'file',
+            items,
+            caption: text,
+            text,
+            source: 'web-share-target'
+          });
         } else if (shareId) {
           checkPendingShareTargets();
         }
@@ -392,9 +523,11 @@ export function initShareTargetListener() {
           }
         }
         if (url) {
-          notifyLinkShareIntent({
+          notifyUniversalShareIntent({
+            type: 'link',
             url,
             title,
+            caption: text,
             text,
             source: 'web-share-target'
           });
@@ -405,7 +538,7 @@ export function initShareTargetListener() {
     });
   }
 
-  // 4. Listen for Native Android Capacitor App URL Open events
+  // 4. Native Android Capacitor App URL Open events
   if (Capacitor.isNativePlatform()) {
     try {
       CapApp.addListener('appUrlOpen', async (data) => {
@@ -429,10 +562,19 @@ export function initShareTargetListener() {
             }
 
             if (finalUrl) {
-              notifyLinkShareIntent({
+              notifyUniversalShareIntent({
+                type: 'link',
                 url: finalUrl,
                 title: sharedTitle || undefined,
+                caption: finalText || undefined,
                 text: finalText || undefined,
+                source: 'android-share-sheet'
+              });
+            } else if (finalText) {
+              notifyUniversalShareIntent({
+                type: 'text',
+                caption: finalText,
+                text: finalText,
                 source: 'android-share-sheet'
               });
             }
@@ -446,13 +588,21 @@ export function initShareTargetListener() {
     }
   }
 
-  // 5. Custom DOM events for testing or programmatic triggering
+  // 5. Custom DOM events for testing or programmatic triggering from Android WebView
+  window.addEventListener('connexa:universal-share', (e: any) => {
+    if (e.detail) {
+      notifyUniversalShareIntent(e.detail);
+    }
+  });
+
   window.addEventListener('connexa:share-media', async (e: any) => {
     if (e.detail?.files) {
       const items = await processIncomingFilesForSharing(e.detail.files);
       if (items.length > 0 || e.detail.text) {
-        notifyShareIntent({
+        notifyUniversalShareIntent({
+          type: 'media',
           items,
+          caption: e.detail.text,
           text: e.detail.text,
           source: 'android-share-sheet'
         });
@@ -472,10 +622,19 @@ export function initShareTargetListener() {
       }
     }
     if (url) {
-      notifyLinkShareIntent({
+      notifyUniversalShareIntent({
+        type: 'link',
         url,
         title: title || undefined,
+        caption: text || undefined,
         text: text || undefined,
+        source: 'android-share-sheet'
+      });
+    } else if (text) {
+      notifyUniversalShareIntent({
+        type: 'text',
+        caption: text,
+        text,
         source: 'android-share-sheet'
       });
     }

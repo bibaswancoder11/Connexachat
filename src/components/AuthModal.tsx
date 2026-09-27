@@ -70,6 +70,8 @@ export const AuthModal: React.FC = () => {
         msg = 'This email is already registered. Please sign in instead.';
       } else if (msg.includes('auth/weak-password')) {
         msg = 'Password should be at least 6 characters long.';
+      } else if (msg.includes('operation-not-allowed')) {
+        msg = "Email/Password sign-in is not yet enabled in Firebase Console. Please enable 'Email/Password' under Firebase Console -> Authentication -> Sign-in method.";
       }
       setError(msg);
     } finally {
