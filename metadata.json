@@ -1,6 +1,6 @@
 {
   "name": "Connexa",
   "description": "Real-time messenger featuring free peer-to-peer audio and video calling, background push notifications, media sharing, and group chats.",
-  "requestFramePermissions": ["camera", "microphone"],
+  "requestFramePermissions": ["camera", "microphone", "display-capture"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

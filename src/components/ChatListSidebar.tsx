@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2, ExternalLink, Link2, ImagePlus } from 'lucide-react';
+import { MessageSquare, Search, Users, UserPlus, Sparkles, PlusCircle, Users2, ExternalLink } from 'lucide-react';
 import { ChatRoom, UserProfile } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
@@ -14,8 +14,6 @@ interface ChatListSidebarProps {
   activeTab: 'chats' | 'search' | 'requests';
   unreadRequestsCount: number;
   onCreateGroupClick: () => void;
-  onShareLinkClick?: () => void;
-  onShareMediaClick?: () => void;
 }
 
 export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
@@ -25,9 +23,7 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
   onNavigateTab,
   activeTab,
   unreadRequestsCount,
-  onCreateGroupClick,
-  onShareLinkClick,
-  onShareMediaClick
+  onCreateGroupClick
 }) => {
   const { userProfile } = useAuth();
   const [filterText, setFilterText] = useState('');
@@ -78,26 +74,6 @@ export const ChatListSidebar: React.FC<ChatListSidebarProps> = ({
               className="w-full pl-9 pr-3 py-2 bg-slate-100 dark:bg-slate-800 border border-transparent dark:border-slate-700/50 rounded-xl text-xs focus:outline-hidden focus:ring-2 focus:ring-blue-500/30 text-slate-900 dark:text-white"
             />
           </div>
-
-          {onShareLinkClick && (
-            <button
-              onClick={onShareLinkClick}
-              className="p-2 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-all"
-              title="Share Web Link with Friends"
-            >
-              <Link2 className="w-4 h-4" />
-            </button>
-          )}
-
-          {onShareMediaClick && (
-            <button
-              onClick={onShareMediaClick}
-              className="p-2 text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 rounded-xl transition-all"
-              title="Share Media with Friends"
-            >
-              <ImagePlus className="w-4 h-4" />
-            </button>
-          )}
 
           <button
             onClick={onCreateGroupClick}

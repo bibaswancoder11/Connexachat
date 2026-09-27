@@ -231,6 +231,25 @@ export async function checkPendingShareTargets() {
           });
         }
       }
+
+      // Check media pending share from external apps/Android intent
+      const rawMediaStored = localStorage.getItem('connexa_pending_share_media');
+      if (rawMediaStored) {
+        localStorage.removeItem('connexa_pending_share_media');
+        let parsedMedia: any = null;
+        try {
+          parsedMedia = JSON.parse(rawMediaStored);
+        } catch {
+          parsedMedia = null;
+        }
+        if (parsedMedia && (Array.isArray(parsedMedia.items) || parsedMedia.text)) {
+          notifyShareIntent({
+            items: parsedMedia.items || [],
+            text: parsedMedia.text || undefined,
+            source: 'android-share-sheet'
+          });
+        }
+      }
     } catch (e) {
       // ignore
     }

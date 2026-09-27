@@ -11,9 +11,19 @@ import {
   Maximize2,
   Volume2,
   VolumeX,
-  Sparkles
+  Sparkles,
+  PenTool,
+  Image as ImageIcon,
+  Youtube,
+  Smartphone,
+  X,
+  Layers,
+  Check,
+  RefreshCw,
+  Share2
 } from 'lucide-react';
 import { CallSession, UserProfile } from '../types';
+import { InCallShareStudio, InCallShareType } from './InCallShareStudio';
 import { 
   RTC_ICE_CONFIG,
   setCallOffer, 
@@ -92,13 +102,32 @@ export const CallModal: React.FC<CallModalProps> = ({
   const [isVideoDisabled, setIsVideoDisabled] = useState(!isVideo);
   const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
   const [isSharingScreen, setIsSharingScreen] = useState(false);
+  const [isSwitchingCamera, setIsSwitchingCamera] = useState(false);
+  const [isStartingScreenShare, setIsStartingScreenShare] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [currentCameraId, setCurrentCameraId] = useState<string>('');
+  const [isMirrored, setIsMirrored] = useState(true);
+  const [showSharePicker, setShowSharePicker] = useState(false);
+  const [isStudioOpen, setIsStudioOpen] = useState(false);
+  const [inCallShareType, setInCallShareType] = useState<InCallShareType | null>(null);
+  const screenStreamRef = useRef<MediaStream | null>(null);
+  const [isSwappedView, setIsSwappedView] = useState(false);
+  const [callToast, setCallToast] = useState<string | null>(null);
   const [duration, setDuration] = useState(0);
   const [isMinimized, setIsMinimized] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
 
+  const toastTimerRef = useRef<any>(null);
   const timerRef = useRef<any>(null);
   const timeoutRef = useRef<any>(null);
+
+  const showCallToast = (msg: string) => {
+    setCallToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => {
+      setCallToast(null);
+    }, 2800);
+  };
 
   // Format call duration MM:SS
   const formatDuration = (secs: number) => {
@@ -133,13 +162,21 @@ export const CallModal: React.FC<CallModalProps> = ({
         remoteStreamRef.current = remoteStream;
 
         pc.ontrack = (event) => {
-          event.streams[0].getTracks().forEach((track) => {
-            remoteStream.addTrack(track);
-          });
-          if (remoteVideoRef.current) {
+          if (event.streams && event.streams[0]) {
+            event.streams[0].getTracks().forEach((track) => {
+              if (!remoteStream.getTracks().some(t => t.id === track.id)) {
+                remoteStream.addTrack(track);
+              }
+            });
+          } else if (event.track) {
+            if (!remoteStream.getTracks().some(t => t.id === event.track.id)) {
+              remoteStream.addTrack(event.track);
+            }
+          }
+          if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStream) {
             remoteVideoRef.current.srcObject = remoteStream;
           }
-          if (remoteAudioRef.current) {
+          if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== remoteStream) {
             remoteAudioRef.current.srcObject = remoteStream;
           }
         };
@@ -210,18 +247,34 @@ export const CallModal: React.FC<CallModalProps> = ({
           localVideoRef.current.srcObject = stream;
         }
 
-        // Add local tracks or transceivers to connection
+        // Initialize camera device settings from acquired stream
+        const initialVideoTrack = stream.getVideoTracks()[0];
+        if (initialVideoTrack) {
+          try {
+            const settings = initialVideoTrack.getSettings ? initialVideoTrack.getSettings() : {};
+            if (settings.deviceId) setCurrentCameraId(settings.deviceId);
+            if (settings.facingMode) {
+              setFacingMode(settings.facingMode as any);
+              setIsMirrored(settings.facingMode === 'user');
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        // Add local tracks to connection
         if (stream.getTracks().length > 0) {
           stream.getTracks().forEach((track) => {
             pc.addTrack(track, stream!);
           });
-        } else {
-          // If no local tracks could be created, configure transceivers to receive remote streams
-          if (typeof pc.addTransceiver === 'function') {
-            pc.addTransceiver('audio', { direction: 'recvonly' });
-            if (isVideo) {
-              pc.addTransceiver('video', { direction: 'recvonly' });
-            }
+        }
+
+        // For video calls, ALWAYS guarantee a video transceiver or sender exists
+        // so SDP offer/answer negotiates the m=video channel even if camera is off or pending
+        if (isVideo) {
+          const hasVideoSender = pc.getSenders().some(s => s.track && s.track.kind === 'video');
+          if (!hasVideoSender && typeof pc.addTransceiver === 'function') {
+            pc.addTransceiver('video', { direction: 'sendrecv' });
           }
         }
 
@@ -448,73 +501,435 @@ export const CallModal: React.FC<CallModalProps> = ({
     }
   };
 
-  // Flip Mobile Camera (Front / Rear)
+  // Helper to reliably find active or allocated video sender in RTCPeerConnection
+  const getVideoSender = (): RTCRtpSender | null => {
+    if (!pcRef.current) return null;
+    const senders = pcRef.current.getSenders();
+    // A. Direct video track match
+    const activeVideoSender = senders.find(s => s.track && s.track.kind === 'video');
+    if (activeVideoSender) return activeVideoSender;
+
+    // B. Transceiver match (for video channel allocated via addTransceiver even if track is null)
+    const transceivers = pcRef.current.getTransceivers();
+    const videoTransceiver = transceivers.find(t => 
+      t.receiver?.track?.kind === 'video' || (t.sender && (t.sender as any).trackKind === 'video')
+    );
+    if (videoTransceiver && videoTransceiver.sender) {
+      return videoTransceiver.sender;
+    }
+
+    // C. Any sender with no track attached yet
+    const emptySender = senders.find(s => !s.track);
+    if (emptySender) return emptySender;
+
+    return null;
+  };
+
+  // Detect if native browser OS screen capture is supported
+  const isNativeDisplayMediaSupported = (): boolean => {
+    if (typeof navigator === 'undefined') return false;
+    return !!(
+      (navigator.mediaDevices && typeof navigator.mediaDevices.getDisplayMedia === 'function') ||
+      typeof (navigator as any).getDisplayMedia === 'function'
+    );
+  };
+
+  // Flip Mobile Camera (Front / Rear) or Cycle Webcams / Toggle Mirror Mode
   const flipCamera = async () => {
-    if (!localStreamRef.current || !pcRef.current || !isVideo) return;
+    if (!isVideo || isSwitchingCamera) return;
+    setIsSwitchingCamera(true);
+
     try {
-      const nextFacing = facingMode === 'user' ? 'environment' : 'user';
-      const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: nextFacing, width: { ideal: 1280 }, height: { ideal: 720 } }
-      });
-      const newVideoTrack = newStream.getVideoTracks()[0];
-
-      const sender = pcRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
-      if (sender) {
-        await sender.replaceTrack(newVideoTrack);
+      // If camera was muted / disabled, turn it on
+      if (isVideoDisabled) {
+        setIsVideoDisabled(false);
       }
 
-      // Stop old track
-      localStreamRef.current.getVideoTracks().forEach(t => t.stop());
-      localStreamRef.current.removeTrack(localStreamRef.current.getVideoTracks()[0]);
-      localStreamRef.current.addTrack(newVideoTrack);
-
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = localStreamRef.current;
+      // If screen sharing was active, restore camera first
+      if (isSharingScreen || isStudioOpen) {
+        await stopScreenShare();
       }
-      setFacingMode(nextFacing);
-    } catch (err) {
+
+      // 1. Enumerate available video devices
+      let videoDevices: MediaDeviceInfo[] = [];
+      try {
+        if (navigator.mediaDevices?.enumerateDevices) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          videoDevices = devices.filter(d => d.kind === 'videoinput');
+        }
+      } catch (enumErr) {
+        console.warn('Enumerate devices warning:', enumErr);
+      }
+
+      const nextFacing: 'user' | 'environment' = facingMode === 'user' ? 'environment' : 'user';
+
+      // Find the best matching next device ID if multiple physical cameras exist
+      let targetDeviceId: string | null = null;
+      if (videoDevices.length > 1) {
+        const targetKeywords = nextFacing === 'environment' 
+          ? ['back', 'rear', 'environment', 'outer', 'world', 'main']
+          : ['front', 'user', 'face', 'selfie', 'inner'];
+
+        const matchedDevice = videoDevices.find(d => {
+          const label = (d.label || '').toLowerCase();
+          return targetKeywords.some(kw => label.includes(kw)) && d.deviceId && d.deviceId !== currentCameraId;
+        });
+
+        if (matchedDevice && matchedDevice.deviceId) {
+          targetDeviceId = matchedDevice.deviceId;
+        } else {
+          // If no keyword match, cycle to next available video device
+          const currentIndex = videoDevices.findIndex(d => d.deviceId === currentCameraId);
+          const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % videoDevices.length : 1;
+          targetDeviceId = videoDevices[nextIndex]?.deviceId || null;
+        }
+      }
+
+      // 2. CRITICAL: Stop previous video tracks first to release Android / iOS camera hardware lock
+      if (localStreamRef.current) {
+        const oldTracks = localStreamRef.current.getVideoTracks();
+        oldTracks.forEach(t => {
+          try { t.stop(); } catch (e) {}
+        });
+      }
+
+      // 3. Acquire new stream with robust prioritized fallbacks
+      let newStream: MediaStream | null = null;
+
+      // Attempt A: Explicit target device ID (if multi-camera device detected)
+      if (targetDeviceId) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              deviceId: { exact: targetDeviceId },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            }
+          });
+        } catch (errA) {
+          console.log('Target deviceId acquisition failed, falling back to facingMode:', errA);
+        }
+      }
+
+      // Attempt B: Exact target facingMode
+      if (!newStream) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { exact: nextFacing },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            }
+          });
+        } catch (errB) {
+          console.log('Exact facingMode failed, falling back to ideal facingMode:', errB);
+        }
+      }
+
+      // Attempt C: Ideal target facingMode
+      if (!newStream) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+              facingMode: { ideal: nextFacing },
+              width: { ideal: 1280 },
+              height: { ideal: 720 }
+            }
+          });
+        } catch (errC) {
+          console.log('Ideal facingMode failed, falling back to general video:', errC);
+        }
+      }
+
+      // Attempt D: Fallback to any available video stream
+      if (!newStream) {
+        try {
+          newStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        } catch (errD) {
+          console.warn('All video acquisition attempts failed:', errD);
+        }
+      }
+
+      // 4. Connect new video track if acquired
+      if (newStream && newStream.getVideoTracks().length > 0) {
+        const newVideoTrack = newStream.getVideoTracks()[0];
+        const settings = newVideoTrack.getSettings ? newVideoTrack.getSettings() : {};
+        const acquiredDeviceId = settings.deviceId || targetDeviceId || '';
+
+        // If only 1 camera device physically exists on machine, toggle mirror mode
+        const isSingleDevice = videoDevices.length <= 1 || (currentCameraId && acquiredDeviceId === currentCameraId);
+
+        let finalFacing = nextFacing;
+        if (settings.facingMode) {
+          finalFacing = settings.facingMode as any;
+        } else if (isSingleDevice) {
+          finalFacing = facingMode;
+        }
+
+        const shouldMirror = isSingleDevice ? !isMirrored : (finalFacing === 'user');
+        setFacingMode(finalFacing);
+        if (acquiredDeviceId) setCurrentCameraId(acquiredDeviceId);
+        setIsMirrored(shouldMirror);
+        setIsVideoDisabled(false);
+
+        // Hot-swap video track into WebRTC peer connection
+        if (pcRef.current) {
+          const videoSender = getVideoSender();
+          if (videoSender) {
+            await videoSender.replaceTrack(newVideoTrack);
+          } else {
+            pcRef.current.addTrack(newVideoTrack, newStream);
+          }
+        }
+
+        // Update localStreamRef (preserving existing audio tracks)
+        if (localStreamRef.current) {
+          localStreamRef.current.getVideoTracks().forEach(t => {
+            try { localStreamRef.current?.removeTrack(t); } catch (e) {}
+          });
+          localStreamRef.current.addTrack(newVideoTrack);
+        } else {
+          localStreamRef.current = newStream;
+        }
+
+        // Update local preview element
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = new MediaStream([newVideoTrack]);
+          localVideoRef.current.play().catch(() => {});
+        }
+
+        if (isSingleDevice) {
+          showCallToast(shouldMirror ? 'Selfie Mode (Mirrored)' : 'Normal View (Unmirrored)');
+        } else {
+          const cameraLabel = finalFacing === 'environment' ? 'Rear (Back) Camera' : 'Front (Selfie) Camera';
+          showCallToast(`Switched to ${cameraLabel}`);
+        }
+      } else {
+        // Fallback: Toggle mirror mode so button gives immediate visual feedback
+        setIsMirrored(prev => !prev);
+        showCallToast('Toggled Camera Mirror Mode');
+      }
+    } catch (err: any) {
       console.warn('Could not switch camera:', err);
+      setIsMirrored(prev => !prev);
+      showCallToast('Toggled Camera Mirror Mode');
+    } finally {
+      setIsSwitchingCamera(false);
     }
   };
 
-  // Toggle Screen Share
+  // Toggle Screen Share or In-Call Share Studio
   const toggleScreenShare = async () => {
-    if (!pcRef.current) return;
-    try {
-      if (!isSharingScreen) {
-        const displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
-        const screenTrack = displayStream.getVideoTracks()[0];
+    if (isSharingScreen || isStudioOpen) {
+      await stopScreenShare();
+      return;
+    }
+    // Launch screen sharing directly!
+    await handleStartNativeScreenShare();
+  };
 
-        const sender = pcRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(screenTrack);
+  // Launch Native Browser Screen Capture with intelligent automatic studio fallback
+  const handleStartNativeScreenShare = async () => {
+    if (isStartingScreenShare) return;
+    setIsStartingScreenShare(true);
+    setShowSharePicker(false);
+
+    try {
+      const getDisplay = navigator.mediaDevices?.getDisplayMedia?.bind(navigator.mediaDevices) || 
+        (navigator as any).getDisplayMedia?.bind(navigator);
+
+      if (!getDisplay) {
+        showCallToast('Screen capture restricted by device. Opening Live Whiteboard!');
+        setInCallShareType('whiteboard');
+        setIsStudioOpen(true);
+        setIsSwappedView(true);
+        return;
+      }
+
+      let displayStream: MediaStream | null = null;
+      try {
+        displayStream = await getDisplay({
+          video: {
+            cursor: 'always',
+            displaySurface: 'monitor'
+          } as any,
+          audio: false
+        });
+      } catch (err: any) {
+        const errMsg = (err?.message || '').toLowerCase();
+        // User clicked "Cancel" in browser picker dialog
+        if (
+          err?.name === 'AbortError' ||
+          errMsg.includes('cancel') ||
+          errMsg.includes('dismissed')
+        ) {
+          showCallToast('Screen share cancelled');
+          return;
         }
 
-        screenTrack.onended = () => {
-          toggleScreenShare(); // revert when user stops sharing via browser bar
-        };
+        // Browser or iframe policy blocked getDisplayMedia
+        if (
+          err?.name === 'NotAllowedError' || 
+          errMsg.includes('denied') || 
+          errMsg.includes('not allowed') ||
+          err?.name === 'SecurityError' ||
+          err?.name === 'NotSupportedError'
+        ) {
+          console.warn('OS capture restricted. Falling back to Live Whiteboard stream:', err);
+          showCallToast('OS capture restricted. Streaming Live Whiteboard!');
+          setInCallShareType('whiteboard');
+          setIsStudioOpen(true);
+          setIsSwappedView(true);
+          return;
+        }
+
+        throw err;
+      }
+
+      const screenTrack = displayStream?.getVideoTracks()[0];
+      if (!screenTrack) {
+        showCallToast('No screen selected');
+        return;
+      }
+
+      screenStreamRef.current = displayStream;
+
+      // When user clicks native browser "Stop Sharing" floating bar
+      screenTrack.onended = () => {
+        stopScreenShare();
+      };
+
+      // Hot-swap screen track into WebRTC peer connection
+      if (pcRef.current) {
+        const videoSender = getVideoSender();
+        if (videoSender) {
+          await videoSender.replaceTrack(screenTrack);
+        } else {
+          pcRef.current.addTrack(screenTrack, displayStream);
+        }
+      }
+
+      // Update local preview with screen track
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = new MediaStream([screenTrack]);
+        localVideoRef.current.play().catch(() => {});
+      }
+
+      setIsSharingScreen(true);
+      setIsVideoDisabled(false);
+      setIsSwappedView(true); // Bring shared screen to primary view
+      showCallToast('Screen sharing started');
+    } catch (err: any) {
+      console.warn('Screen share failed:', err);
+      showCallToast('Opening Live Whiteboard Studio...');
+      setInCallShareType('whiteboard');
+      setIsStudioOpen(true);
+      setIsSwappedView(true);
+    } finally {
+      setIsStartingScreenShare(false);
+    }
+  };
+
+  // Launch In-Call Share Studio (Whiteboard, Photo Presentation, or YouTube)
+  const handleStartInCallStudio = (type: InCallShareType) => {
+    setShowSharePicker(false);
+    setInCallShareType(type);
+    setIsStudioOpen(true);
+    setIsSwappedView(true);
+  };
+
+  // Connect In-Call Studio Canvas Stream into WebRTC
+  const handleStudioStreamReady = async (stream: MediaStream, type: InCallShareType) => {
+    const canvasTrack = stream.getVideoTracks()[0];
+    if (!canvasTrack) return;
+
+    screenStreamRef.current = stream;
+
+    // Hot-swap canvas track into WebRTC peer connection
+    if (pcRef.current) {
+      const videoSender = getVideoSender();
+      if (videoSender) {
+        await videoSender.replaceTrack(canvasTrack);
+      } else {
+        pcRef.current.addTrack(canvasTrack, stream);
+      }
+    }
+
+    // Update local preview
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = new MediaStream([canvasTrack]);
+      localVideoRef.current.play().catch(() => {});
+    }
+
+    setIsSharingScreen(true);
+    setIsVideoDisabled(false);
+    showCallToast(`Live ${type === 'whiteboard' ? 'Whiteboard' : type === 'photo' ? 'Photo' : 'Media'} streaming`);
+  };
+
+  // Cleanly Stop Screen Share or In-Call Studio and Restore Camera
+  const stopScreenShare = async () => {
+    setIsSharingScreen(false);
+    setIsStudioOpen(false);
+    setInCallShareType(null);
+    setIsSwappedView(false);
+
+    if (screenStreamRef.current) {
+      screenStreamRef.current.getTracks().forEach(t => {
+        try { t.stop(); } catch (e) {}
+      });
+      screenStreamRef.current = null;
+    }
+
+    try {
+      // Re-acquire camera stream
+      let camStream: MediaStream | null = null;
+      try {
+        camStream = await navigator.mediaDevices.getUserMedia({
+          video: currentCameraId 
+            ? { deviceId: { ideal: currentCameraId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+            : { facingMode: { ideal: facingMode }, width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+      } catch {
+        try {
+          camStream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: facingMode } }
+          });
+        } catch {
+          camStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        }
+      }
+
+      const camTrack = camStream?.getVideoTracks()[0];
+      if (camTrack) {
+        if (pcRef.current) {
+          const videoSender = getVideoSender();
+          if (videoSender) {
+            await videoSender.replaceTrack(camTrack);
+          }
+        }
+
+        if (localStreamRef.current) {
+          const oldTracks = localStreamRef.current.getVideoTracks();
+          oldTracks.forEach(t => {
+            try {
+              t.stop();
+              localStreamRef.current?.removeTrack(t);
+            } catch (e) {}
+          });
+          localStreamRef.current.addTrack(camTrack);
+        } else {
+          localStreamRef.current = camStream;
+        }
 
         if (localVideoRef.current) {
-          localVideoRef.current.srcObject = displayStream;
+          localVideoRef.current.srcObject = new MediaStream([camTrack]);
+          localVideoRef.current.play().catch(() => {});
         }
-        setIsSharingScreen(true);
-      } else {
-        // Revert back to webcam
-        const camStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } }
-        });
-        const camTrack = camStream.getVideoTracks()[0];
-        const sender = pcRef.current.getSenders().find(s => s.track && s.track.kind === 'video');
-        if (sender) {
-          await sender.replaceTrack(camTrack);
-        }
-        if (localVideoRef.current && localStreamRef.current) {
-          localVideoRef.current.srcObject = localStreamRef.current;
-        }
-        setIsSharingScreen(false);
       }
-    } catch (e) {
-      console.warn('Screen share cancelled or unsupported:', e);
+      showCallToast('Screen sharing stopped');
+    } catch (err) {
+      console.warn('Could not restore camera stream after screen share:', err);
+      showCallToast('Screen sharing stopped');
     }
   };
 
@@ -641,58 +1056,124 @@ export const CallModal: React.FC<CallModalProps> = ({
         </div>
       )}
 
+      {/* In-Call Toast Notification for Camera Flip & Screen Share feedback */}
+      {callToast && (
+        <div className="absolute top-18 z-50 left-1/2 -translate-x-1/2 px-4 py-2 bg-slate-900/95 backdrop-blur-md border border-slate-700/80 text-white rounded-2xl shadow-2xl text-xs font-semibold flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
+          <Sparkles className="w-4 h-4 text-blue-400 shrink-0" />
+          <span>{callToast}</span>
+        </div>
+      )}
+
       {/* Main Body: Video or Audio Experience */}
       <div className="flex-1 w-full flex flex-col items-center justify-center relative p-4 z-10">
         {isVideo ? (
           // ================= VIDEO CALL EXPERIENCE =================
           <div className="w-full h-full max-w-5xl rounded-3xl overflow-hidden relative bg-slate-900 border border-slate-800 flex items-center justify-center shadow-2xl">
-            {/* Remote Fullscreen Video */}
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="w-full h-full object-cover"
-            />
+            {isStudioOpen ? (
+              // ================= IN-CALL SCREEN STUDIO (WHITEBOARD / PHOTO / YOUTUBE) =================
+              <div className="w-full h-full relative z-10 flex flex-col">
+                <InCallShareStudio
+                  initialType={inCallShareType || 'whiteboard'}
+                  onStreamReady={handleStudioStreamReady}
+                  onStopSharing={stopScreenShare}
+                  isOtherPartySharing={false}
+                />
 
-            {/* Remote Video Fallback if remote video track is off / not connected */}
-            {callStatus !== 'connected' && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/90 backdrop-blur-md space-y-4">
-                <div className="relative">
-                  <span className="absolute -inset-4 rounded-full bg-blue-500/20 animate-ping" />
-                  <img
-                    src={otherPartyAvatar}
-                    alt={otherPartyName}
-                    className="relative w-28 h-28 rounded-3xl object-cover ring-4 ring-blue-500 shadow-2xl"
+                {/* Floating remote party video preview so you can see caller reactions while drawing */}
+                <div 
+                  onClick={() => setIsSwappedView(!isSwappedView)}
+                  className="absolute bottom-16 sm:bottom-20 right-3 sm:right-4 w-28 sm:w-36 aspect-3/4 rounded-2xl overflow-hidden bg-slate-950 border-2 border-slate-700 shadow-2xl z-20 cursor-pointer hover:ring-2 hover:ring-blue-500 transition-all"
+                  title="Remote participant (tap to toggle)"
+                >
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute bottom-1 left-1 px-1.5 py-0.5 rounded bg-black/60 backdrop-blur-xs text-[9px] font-semibold text-white truncate max-w-[90%]">
+                    {otherPartyName}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              // ================= STANDARD CAMERA & SCREEN SHARE VIEW =================
+              <>
+                {/* Remote Video Container */}
+                <div 
+                  onClick={() => {
+                    if (isSwappedView) setIsSwappedView(false);
+                  }}
+                  className={
+                    isSwappedView
+                      ? 'absolute top-4 right-4 w-28 sm:w-44 aspect-3/4 rounded-2xl overflow-hidden bg-slate-800 border-2 border-slate-700 shadow-2xl z-20 cursor-pointer hover:ring-2 hover:ring-blue-500/50 transition-all'
+                      : 'w-full h-full relative flex items-center justify-center'
+                  }
+                  title={isSwappedView ? 'Tap to expand other party' : undefined}
+                >
+                  <video
+                    ref={remoteVideoRef}
+                    autoPlay
+                    playsInline
+                    className={`w-full h-full ${isSharingScreen ? 'object-contain bg-black' : 'object-cover'}`}
                   />
                 </div>
-                <h3 className="text-xl font-bold text-white">{otherPartyName}</h3>
-                <p className="text-sm text-slate-400">
-                  {callStatus === 'ringing' ? 'Calling on Connexa...' : 'Establishing peer connection...'}
-                </p>
-              </div>
-            )}
 
-            {/* Picture-in-Picture Local Video Preview (Draggable corner) */}
-            <div className="absolute top-4 right-4 w-28 sm:w-44 aspect-3/4 rounded-2xl overflow-hidden bg-slate-800 border-2 border-slate-700 shadow-2xl z-20">
-              <video
-                ref={localVideoRef}
-                autoPlay
-                playsInline
-                muted
-                className={`w-full h-full object-cover ${facingMode === 'user' ? '-scale-x-100' : ''} ${isVideoDisabled ? 'hidden' : ''}`}
-              />
-              {isVideoDisabled && (
-                <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-400 p-2 text-center">
-                  <VideoOff className="w-6 h-6 mb-1 text-slate-500" />
-                  <span className="text-[10px] font-semibold">Camera Off</span>
+                {/* Remote Video Fallback if remote video track is off / not connected */}
+                {callStatus !== 'connected' && !isSwappedView && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900/90 backdrop-blur-md space-y-4">
+                    <div className="relative">
+                      <span className="absolute -inset-4 rounded-full bg-blue-500/20 animate-ping" />
+                      <img
+                        src={otherPartyAvatar}
+                        alt={otherPartyName}
+                        className="relative w-28 h-28 rounded-3xl object-cover ring-4 ring-blue-500 shadow-2xl"
+                      />
+                    </div>
+                    <h3 className="text-xl font-bold text-white">{otherPartyName}</h3>
+                    <p className="text-sm text-slate-400">
+                      {callStatus === 'ringing' ? 'Calling on Connexa...' : 'Establishing peer connection...'}
+                    </p>
+                  </div>
+                )}
+
+                {/* Local Video Preview Container (Camera or Screen Share) */}
+                <div 
+                  onClick={() => {
+                    if (!isSwappedView) setIsSwappedView(true);
+                  }}
+                  className={
+                    isSwappedView
+                      ? 'w-full h-full relative flex items-center justify-center'
+                      : 'absolute top-4 right-4 w-28 sm:w-44 aspect-3/4 rounded-2xl overflow-hidden bg-slate-800 border-2 border-slate-700 shadow-2xl z-20 cursor-pointer hover:ring-2 hover:ring-blue-500/50 transition-all'
+                  }
+                  title={!isSwappedView ? 'Tap to expand your camera/screen' : undefined}
+                >
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className={`w-full h-full ${
+                      isSharingScreen ? 'object-contain bg-black' : 'object-cover'
+                    } ${
+                      isMirrored && !isSharingScreen ? '-scale-x-100' : 'scale-x-100'
+                    } ${isVideoDisabled ? 'hidden' : ''}`}
+                  />
+                  {isVideoDisabled && (
+                    <div className="w-full h-full flex flex-col items-center justify-center bg-slate-800 text-slate-400 p-2 text-center">
+                      <VideoOff className="w-6 h-6 mb-1 text-slate-500" />
+                      <span className="text-[10px] font-semibold">Camera Off</span>
+                    </div>
+                  )}
+                  {isSharingScreen && !isSwappedView && (
+                    <div className="absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded bg-blue-600 text-[10px] font-bold text-white shadow-xs">
+                      Screen
+                    </div>
+                  )}
                 </div>
-              )}
-              {isSharingScreen && (
-                <div className="absolute bottom-1.5 left-1.5 px-1.5 py-0.5 rounded bg-blue-600 text-[10px] font-bold text-white">
-                  Screen
-                </div>
-              )}
-            </div>
+              </>
+            )}
           </div>
         ) : (
           // ================= AUDIO / VOICE CALL EXPERIENCE =================
@@ -765,24 +1246,42 @@ export const CallModal: React.FC<CallModalProps> = ({
             <button
               type="button"
               onClick={flipCamera}
-              className="w-13 h-13 sm:w-14 sm:h-14 rounded-full bg-slate-800/90 text-slate-200 hover:bg-slate-700 hover:text-white flex items-center justify-center transition-all backdrop-blur-md border border-slate-700/60 shadow-lg"
-              title="Flip Camera (Front / Rear)"
+              disabled={isSwitchingCamera}
+              className={`w-13 h-13 sm:w-14 sm:h-14 rounded-full bg-slate-800/90 text-slate-200 hover:bg-slate-700 hover:text-white flex items-center justify-center transition-all backdrop-blur-md border border-slate-700/60 shadow-lg active:scale-95 group ${
+                isSwitchingCamera ? 'opacity-70 cursor-wait' : ''
+              }`}
+              title="Switch Camera (Front / Rear / Mirror Mode)"
             >
-              <SwitchCamera className="w-6 h-6" />
+              <SwitchCamera className={`w-6 h-6 transition-transform group-hover:rotate-180 duration-300 ${isSwitchingCamera ? 'animate-spin text-blue-400' : ''}`} />
             </button>
 
-            {/* Share Screen */}
+            {/* Share Screen (Direct 1-Tap Toggle) */}
             <button
               type="button"
               onClick={toggleScreenShare}
-              className={`w-13 h-13 sm:w-14 sm:h-14 rounded-full flex items-center justify-center transition-all backdrop-blur-md shadow-lg ${
-                isSharingScreen 
-                  ? 'bg-blue-600 text-white shadow-blue-600/30' 
+              disabled={isStartingScreenShare}
+              className={`w-13 h-13 sm:w-14 sm:h-14 rounded-full flex items-center justify-center transition-all backdrop-blur-md shadow-lg active:scale-95 ${
+                isSharingScreen || isStudioOpen 
+                  ? 'bg-blue-600 text-white shadow-blue-600/40 ring-4 ring-blue-500/40 animate-pulse' 
                   : 'bg-slate-800/90 text-slate-200 hover:bg-slate-700 hover:text-white border border-slate-700/60'
-              }`}
-              title={isSharingScreen ? 'Stop Sharing' : 'Share Screen'}
+              } ${isStartingScreenShare ? 'opacity-70 cursor-wait' : ''}`}
+              title={isSharingScreen || isStudioOpen ? 'Stop Sharing Screen' : 'Share Screen (Broadcast Live)'}
             >
-              <MonitorUp className="w-6 h-6" />
+              {isStartingScreenShare ? (
+                <RefreshCw className="w-6 h-6 animate-spin text-blue-400" />
+              ) : (
+                <MonitorUp className="w-6 h-6" />
+              )}
+            </button>
+
+            {/* In-Call Studio Menu (Whiteboard, Photo, YouTube) */}
+            <button
+              type="button"
+              onClick={() => setShowSharePicker(true)}
+              className="w-13 h-13 sm:w-14 sm:h-14 rounded-full bg-slate-800/90 text-slate-200 hover:bg-slate-700 hover:text-white flex items-center justify-center transition-all backdrop-blur-md border border-slate-700/60 shadow-lg active:scale-95"
+              title="More Sharing Options (Whiteboard, Photo Presenter, YouTube)"
+            >
+              <Layers className="w-5 h-5 text-indigo-400" />
             </button>
           </>
         )}
@@ -811,6 +1310,140 @@ export const CallModal: React.FC<CallModalProps> = ({
           <PhoneOff className="w-7 h-7" />
         </button>
       </div>
+
+      {/* Share Screen & Content Studio Picker Modal */}
+      {showSharePicker && (
+        <div 
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowSharePicker(false);
+          }}
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-150"
+        >
+          <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-t-3xl sm:rounded-3xl shadow-2xl p-5 sm:p-6 space-y-4 animate-in slide-in-from-bottom-4 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-blue-400">
+                  <Share2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Share Screen & Content</h3>
+                  <p className="text-xs text-slate-400">Choose what you want to share with {otherPartyName}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSharePicker(false)}
+                className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Options List */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Option 1: Native Display / Screen Share */}
+              <button
+                type="button"
+                onClick={handleStartNativeScreenShare}
+                className="p-4 rounded-2xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 hover:border-blue-500/50 flex flex-col items-start gap-2 text-left transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <MonitorUp className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white">Share Screen</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                      {isNativeDisplayMediaSupported() ? 'Native' : 'Auto'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Broadcast your full screen, app window, or browser tab
+                  </p>
+                </div>
+              </button>
+
+              {/* Option 2: Live Interactive Whiteboard */}
+              <button
+                type="button"
+                onClick={() => handleStartInCallStudio('whiteboard')}
+                className="p-4 rounded-2xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 hover:border-emerald-500/50 flex flex-col items-start gap-2 text-left transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <PenTool className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white">Live Whiteboard</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      30fps
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Draw, write diagrams, and sketch live on video stream
+                  </p>
+                </div>
+              </button>
+
+              {/* Option 3: Present Photo / Document */}
+              <button
+                type="button"
+                onClick={() => handleStartInCallStudio('photo')}
+                className="p-4 rounded-2xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 hover:border-purple-500/50 flex flex-col items-start gap-2 text-left transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-purple-500/10 border border-purple-500/20 text-purple-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <ImageIcon className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white">Present Photo</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                      Markup
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Present images, slides, receipts, with live pen notes
+                  </p>
+                </div>
+              </button>
+
+              {/* Option 4: Watch YouTube Together */}
+              <button
+                type="button"
+                onClick={() => handleStartInCallStudio('youtube')}
+                className="p-4 rounded-2xl bg-slate-800/80 hover:bg-slate-800 border border-slate-700/80 hover:border-rose-500/50 flex flex-col items-start gap-2 text-left transition-all group"
+              >
+                <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center group-hover:scale-110 transition-transform">
+                  <Youtube className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm font-bold text-white">YouTube Stream</span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                      Sync
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Watch synchronized YouTube video together during call
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            {/* Cancel Button */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => setShowSharePicker(false)}
+                className="w-full py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white font-semibold text-xs transition-colors min-h-[44px]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

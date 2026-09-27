@@ -570,8 +570,6 @@ const ConnexaApp: React.FC = () => {
               activeTab={activeTab}
               unreadRequestsCount={incomingRequests.length}
               onCreateGroupClick={() => setShowCreateGroupModal(true)}
-              onShareLinkClick={() => setSharedLinkPayload({ url: '', text: '', source: 'in-app' })}
-              onShareMediaClick={() => setSharedMediaPayload({ items: [], text: '', source: 'file-drop' })}
             />
           </div>
 
@@ -680,6 +678,7 @@ const ConnexaApp: React.FC = () => {
             friends={friends}
             chats={chats}
             initialItems={sharedMediaPayload.items}
+            initialPayload={sharedMediaPayload}
             onClose={() => setSharedMediaPayload(null)}
             onSuccess={(chatIds) => {
               setSharedMediaPayload(null);
@@ -688,6 +687,10 @@ const ConnexaApp: React.FC = () => {
                 title: 'Media Shared',
                 body: `Media sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
               });
+              if (chatIds && chatIds.length === 1) {
+                setActiveChatId(chatIds[0]);
+                setActiveTab('chats');
+              }
             }}
           />
         )}
