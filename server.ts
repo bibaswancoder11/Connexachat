@@ -4,6 +4,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import webpush from 'web-push';
+import compression from 'compression';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,6 +12,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = 3000;
 
+app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
@@ -71,7 +73,51 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: Date.now() });
 });
 
-// 2. VAPID Public Key API
+// 2. High-Performance WebRTC ICE & TURN Relay Gateway API
+app.get('/api/ice-servers', (req, res) => {
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+
+  const customTurn = process.env.TURN_URL ? [{
+    urls: process.env.TURN_URL.split(',').map(u => u.trim()),
+    username: process.env.TURN_USERNAME || '',
+    credential: process.env.TURN_CREDENTIAL || ''
+  }] : [];
+
+  res.json({
+    iceServers: [
+      // Primary Tier: Google Multi-Region STUN
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      // Secondary Tier: Cloudflare STUN
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      // Tertiary Tier: OpenRelay Global Multi-Port TURN (UDP, TCP, and TLS Port 443 for Carrier NAT Bypass)
+      {
+        urls: [
+          'stun:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turns:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: process.env.TURN_USERNAME || 'openrelayproject',
+        credential: process.env.TURN_CREDENTIAL || 'openrelayproject'
+      },
+      ...customTurn
+    ],
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require'
+  });
+});
+
+// 3. Call Ping / Latency Diagnostic API
+app.get('/api/call/ping', (req, res) => {
+  res.json({ pong: true, time: Date.now() });
+});
+
+// 4. VAPID Public Key API
 app.get('/api/vapid-public-key', (req, res) => {
   res.json({ publicKey: vapidKeys.publicKey });
 });
@@ -270,9 +316,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Connexa Server with Push Notification Gateway running on http://localhost:${PORT}`);
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Connexa High-Performance Server running on http://localhost:${PORT}`);
   });
+
+  // Optimize server keep-alive timeouts to prevent connection drops on cellular / mobile
+  server.keepAliveTimeout = 65000;
+  server.headersTimeout = 66000;
 }
 
 startServer();

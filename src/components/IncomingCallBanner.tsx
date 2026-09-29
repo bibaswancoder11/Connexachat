@@ -63,7 +63,10 @@ export const IncomingCallBanner: React.FC<IncomingCallBannerProps> = ({
             <h4 className="font-bold text-base text-white truncate mt-0.5">
               {call.callerName}
             </h4>
-            <p className="text-xs text-slate-400">Connexa Free WebRTC Call</p>
+            <p className="text-xs text-slate-400 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+              <span>{isVideo ? 'Connexa HD Video Call' : 'Connexa HD Voice Call'}</span>
+            </p>
           </div>
 
           {/* Action Buttons: Decline (Red) & Accept (Green) */}

@@ -1,4 +1,4 @@
-// WebRTC 100% Free Peer-to-Peer Calling Service with Firebase Firestore Signaling
+// Connexa Production-Grade HD Audio & Video Calling Service
 import {
   collection,
   doc,
@@ -17,16 +17,54 @@ import { CallSession, CallType, CallStatus, UserProfile } from '../types';
 import { dispatchBackgroundPushNotification } from './notificationService';
 import { sendMessage } from './chatService';
 
-// Public Google STUN servers (100% free, highly reliable, zero API keys required)
+// Enterprise High-Availability STUN & TURN Relay Configuration
+// Supports direct P2P with seamless fallback to encrypted TURN relays over UDP/TCP/TLS 443
 export const RTC_ICE_CONFIG: RTCConfiguration = {
   iceServers: [
+    // Google Global Anycast STUN
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
     { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' }
+    { urls: 'stun:stun4.l.google.com:19302' },
+    // Cloudflare STUN
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    // OpenRelay High-Performance Multi-Port TURN Relays (Bypasses Carrier NAT & Strict Firewalls)
+    {
+      urls: [
+        'stun:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turns:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ],
-  iceCandidatePoolSize: 10
+  iceCandidatePoolSize: 10,
+  bundlePolicy: 'max-bundle',
+  rtcpMuxPolicy: 'require'
+};
+
+let cachedDynamicIceConfig: RTCConfiguration | null = null;
+
+export const fetchServerIceConfiguration = async (): Promise<RTCConfiguration> => {
+  if (cachedDynamicIceConfig) return cachedDynamicIceConfig;
+
+  try {
+    const res = await fetch('/api/ice-servers', { cache: 'force-cache' });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && Array.isArray(data.iceServers) && data.iceServers.length > 0) {
+        cachedDynamicIceConfig = data;
+        return data;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to load server ICE configuration, using resilient built-in fallback:', err);
+  }
+
+  return RTC_ICE_CONFIG;
 };
 
 // 1. Initiate a Call (Audio or Video)

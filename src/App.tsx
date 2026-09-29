@@ -48,7 +48,7 @@ const ConnexaApp: React.FC = () => {
   const [sharedLinkPayload, setSharedLinkPayload] = useState<SharedLinkPayload | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
-  // Calling States (Free WebRTC Peer-to-Peer Calls)
+  // Calling States (HD Voice & Video Calls)
   const [incomingCall, setIncomingCall] = useState<CallSession | null>(null);
   const [activeCallSession, setActiveCallSession] = useState<CallSession | null>(null);
   const [isCallInitiator, setIsCallInitiator] = useState<boolean>(false);

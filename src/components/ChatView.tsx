@@ -171,6 +171,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
+  const documentInputRef = useRef<HTMLInputElement>(null);
   const recordingTimerRef = useRef<any>(null);
 
   // Keyboard shortcut listener for Lightbox (ESC to close)
@@ -325,6 +326,58 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const file = e.target.files?.[0];
     if (file) {
       processAndSetImageFile(file);
+    }
+  };
+
+  // Process & send document files (PDF, Word, TXT, Excel, ZIP, etc.)
+  const processAndSendDocumentFile = async (file: File) => {
+    if (!userProfile || !chat.id || isBlocked) return;
+    if (file.size > 25 * 1024 * 1024) {
+      alert('File size exceeds the 25MB limit.');
+      return;
+    }
+
+    setIsProcessingMedia(true);
+    setMediaProcessingLabel(`Uploading ${file.name}...`);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const dataUrl = reader.result as string;
+        await sendMessage(
+          chat.id,
+          userProfile.uid,
+          '',
+          'file',
+          dataUrl,
+          userProfile,
+          {
+            filename: file.name,
+            mediaSize: file.size,
+            fileType: file.type || 'application/octet-stream'
+          }
+        );
+        setIsProcessingMedia(false);
+        setMediaProcessingLabel('');
+      };
+      reader.onerror = () => {
+        setIsProcessingMedia(false);
+        setMediaProcessingLabel('');
+        alert('Could not read document file.');
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      setIsProcessingMedia(false);
+      setMediaProcessingLabel('');
+      console.error('Failed to attach document:', err);
+    } finally {
+      if (documentInputRef.current) documentInputRef.current.value = '';
+    }
+  };
+
+  const handleDocumentSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      processAndSendDocumentFile(file);
     }
   };
 
@@ -657,14 +710,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {/* Action icons */}
         <div className="flex items-center gap-0.5 sm:gap-1 relative shrink-0">
-          {/* 1-on-1 Free WebRTC Calling Buttons (Voice & Video) */}
+          {/* 1-on-1 HD Voice & Video Calling Buttons */}
           {!isGroup && otherUser && !isBlocked && (
             <>
               <button
                 type="button"
                 onClick={() => onStartCall?.('audio')}
-                className="p-2 text-slate-600 hover:text-emerald-600 dark:text-slate-300 dark:hover:text-emerald-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                title="Voice Call (Free P2P)"
+                className="p-2 text-slate-600 hover:text-emerald-600 dark:text-slate-300 dark:hover:text-emerald-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Voice Call"
               >
                 <Phone className="w-4 h-4" />
               </button>
@@ -672,8 +725,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => onStartCall?.('video')}
-                className="p-2 text-slate-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                title="Video Call (Free P2P)"
+                className="p-2 text-slate-600 hover:text-blue-600 dark:text-slate-300 dark:hover:text-blue-400 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Video Call"
               >
                 <VideoIcon className="w-4 h-4" />
               </button>
@@ -1403,6 +1456,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
               <button
                 type="button"
+                onClick={() => {
+                  setShowAttachMenu(false);
+                  documentInputRef.current?.click();
+                }}
+                className="flex flex-col items-center gap-1.5 p-2.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition-colors text-[11px] font-semibold"
+              >
+                <div className="p-2.5 bg-amber-100 dark:bg-amber-950 text-amber-600 dark:text-amber-400 rounded-xl">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <span>Document</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={async () => {
                   setShowAttachMenu(false);
                   const perm = await requestCameraPermission();
@@ -1466,6 +1533,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   else processAndSetImageFile(file);
                 }
               }}
+              className="hidden"
+            />
+            <input
+              ref={documentInputRef}
+              type="file"
+              onChange={handleDocumentSelect}
               className="hidden"
             />
 

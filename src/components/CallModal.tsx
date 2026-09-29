@@ -26,6 +26,7 @@ import { CallSession, UserProfile } from '../types';
 import { InCallShareStudio, InCallShareType } from './InCallShareStudio';
 import { 
   RTC_ICE_CONFIG,
+  fetchServerIceConfiguration,
   setCallOffer, 
   answerCallSession, 
   endCallSession, 
@@ -93,6 +94,7 @@ export const CallModal: React.FC<CallModalProps> = ({
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingRemoteCandidatesRef = useRef<RTCIceCandidateInit[]>([]);
 
   // Call states
   const [callStatus, setCallStatus] = useState<'ringing' | 'connecting' | 'connected' | 'ended'>(
@@ -153,9 +155,60 @@ export const CallModal: React.FC<CallModalProps> = ({
           }
         }, 60000);
 
-        // A. Create RTCPeerConnection
-        const pc = new RTCPeerConnection(RTC_ICE_CONFIG);
+        // A. Create RTCPeerConnection with Dynamic Multi-Cluster STUN + TURN Relays
+        const iceConfig = await fetchServerIceConfiguration();
+        const pc = new RTCPeerConnection(iceConfig);
         pcRef.current = pc;
+
+        // Automatically monitor connection & ICE states with automatic restart if connection drops
+        pc.oniceconnectionstatechange = () => {
+          const state = pc.iceConnectionState;
+          if (state === 'connected' || state === 'completed') {
+            setCallStatus('connected');
+          } else if (state === 'failed') {
+            console.warn('ICE connection failed, executing automatic ICE restart...');
+            try {
+              if (typeof pc.restartIce === 'function') {
+                pc.restartIce();
+              }
+            } catch (e) {
+              console.warn('ICE restart error:', e);
+            }
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'connected') {
+            setCallStatus('connected');
+          }
+        };
+
+        const addOrBufferCandidate = async (candidateInit: RTCIceCandidateInit) => {
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
+            } catch (e) {
+              console.warn('Error applying remote ICE candidate:', e);
+            }
+          } else {
+            pendingRemoteCandidatesRef.current.push(candidateInit);
+          }
+        };
+
+        const flushPendingCandidates = async () => {
+          if (!pc.remoteDescription) return;
+          if (pendingRemoteCandidatesRef.current.length > 0) {
+            const list = [...pendingRemoteCandidatesRef.current];
+            pendingRemoteCandidatesRef.current = [];
+            for (const cand of list) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (e) {
+                console.warn('Error applying buffered ICE candidate:', e);
+              }
+            }
+          }
+        };
 
         // B. Handle Remote Stream
         const remoteStream = new MediaStream();
@@ -286,31 +339,20 @@ export const CallModal: React.FC<CallModalProps> = ({
 
           // Listen for remote ICE candidates from recipient
           subscribeToIceCandidates(call.id, 'recipient', async (candidateInit) => {
-            if (pc.remoteDescription) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
-              } catch (e) {
-                console.warn('Error adding recipient candidate:', e);
-              }
-            }
+            await addOrBufferCandidate(candidateInit);
           });
         } else {
           // Answering incoming call
           if (call.offer) {
             await pc.setRemoteDescription(new RTCSessionDescription(call.offer));
+            await flushPendingCandidates();
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             await answerCallSession(call.id, answer);
 
             // Listen for remote ICE candidates from caller
             subscribeToIceCandidates(call.id, 'caller', async (candidateInit) => {
-              if (pc.remoteDescription) {
-                try {
-                  await pc.addIceCandidate(new RTCIceCandidate(candidateInit));
-                } catch (e) {
-                  console.warn('Error adding caller candidate:', e);
-                }
-              }
+              await addOrBufferCandidate(candidateInit);
             });
           }
         }
@@ -335,6 +377,17 @@ export const CallModal: React.FC<CallModalProps> = ({
         if (isInitiator && updatedCall.answer && pcRef.current && !pcRef.current.remoteDescription) {
           try {
             await pcRef.current.setRemoteDescription(new RTCSessionDescription(updatedCall.answer));
+            if (pcRef.current) {
+              const pending = [...pendingRemoteCandidatesRef.current];
+              pendingRemoteCandidatesRef.current = [];
+              for (const cand of pending) {
+                try {
+                  await pcRef.current.addIceCandidate(new RTCIceCandidate(cand));
+                } catch (e) {
+                  console.warn('Error applying buffered candidate on caller:', e);
+                }
+              }
+            }
             playCallConnectedTone();
           } catch (e) {
             console.warn('Error setting remote description on caller:', e);
@@ -1023,8 +1076,9 @@ export const CallModal: React.FC<CallModalProps> = ({
             </span>
           </span>
 
-          <span className="hidden sm:inline-block px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-400 text-[11px] font-medium border border-blue-500/30">
-            Free WebRTC P2P
+          <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 text-emerald-400 text-[11px] font-semibold border border-emerald-500/30">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            End-to-End Encrypted HD
           </span>
         </div>
 
