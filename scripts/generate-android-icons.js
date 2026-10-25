@@ -238,6 +238,20 @@ async function generateIcons() {
 
     fs.writeFileSync(path.join(drawableDir, 'ic_launcher_background.xml'), drawableBgXml);
 
+    // Monochrome status-bar notification icon (prevents adaptive-icon notification crashes on Android 8+)
+    const statNotificationXml = `<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M20,2H4C2.9,2 2,2.9 2,4v18l4,-4h14c1.1,0 2,-0.9 2,-2V4C22,2.9 21.1,2 20,2zM20,16H5.17L4,17.17V4h16V16z" />
+</vector>`;
+
+    fs.writeFileSync(path.join(drawableDir, 'ic_stat_connexa.xml'), statNotificationXml);
+
     // Also ensure mipmap-anydpi-v26 contains proper adaptive definitions
     const anyDpiDir = path.join(androidResDir, 'mipmap-anydpi-v26');
     if (!fs.existsSync(anyDpiDir)) {
@@ -253,13 +267,25 @@ async function generateIcons() {
     fs.writeFileSync(path.join(anyDpiDir, 'ic_launcher.xml'), adaptiveLauncherXml);
     fs.writeFileSync(path.join(anyDpiDir, 'ic_launcher_round.xml'), adaptiveLauncherXml);
 
-    // Overwrite splash.png in drawable if present
-    await sharp(Buffer.from(splashSvg))
+    // Overwrite splash.png in drawable and any portrait/landscape drawable folders
+    const portraitSplashBuf = await sharp(Buffer.from(splashSvg))
       .resize(1080, 1920)
       .png()
-      .toFile(path.join(drawableDir, 'splash.png'));
+      .toBuffer();
 
-    console.log('Successfully generated all Android launcher icons (legacy + adaptive + round) & splash screen!');
+    fs.writeFileSync(path.join(drawableDir, 'splash.png'), portraitSplashBuf);
+
+    const resEntries = fs.readdirSync(androidResDir);
+    for (const entry of resEntries) {
+      if (entry.startsWith('drawable-port-') || entry.startsWith('drawable-land-')) {
+        const targetSplash = path.join(androidResDir, entry, 'splash.png');
+        if (fs.existsSync(targetSplash)) {
+          fs.writeFileSync(targetSplash, portraitSplashBuf);
+        }
+      }
+    }
+
+    console.log('Successfully generated all Android launcher icons (legacy + adaptive + round + monochrome notif) & splash screens!');
   } else {
     console.log('Android res directory not found yet (will be generated during CI build).');
   }

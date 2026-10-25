@@ -67,39 +67,68 @@ jobs:
         run: |
           npm run generate:icons
 
-      - name: Configure App Version, Name & Permissions
+      - name: Configure App Version, Name, Manifest & Native Share Bridge
         run: |
           VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
           VERSION_CODE="${{ github.event.inputs.version_code || '1' }}"
           echo "Building Connexa version: $VERSION_NAME (Code: $VERSION_CODE)"
 
-          # Set app name in strings.xml
           STRINGS_PATH="android/app/src/main/res/values/strings.xml"
           if [ -f "$STRINGS_PATH" ]; then
             sed -i 's/<string name="app_name">.*<\/string>/<string name="app_name">Connexa<\/string>/g' "$STRINGS_PATH" || true
             sed -i 's/<string name="title_activity_main">.*<\/string>/<string name="title_activity_main">Connexa<\/string>/g' "$STRINGS_PATH" || true
           fi
 
-          # Update version in build.gradle
           if [ -f "android/app/build.gradle" ]; then
             sed -i "s/versionCode 1/versionCode $VERSION_CODE/g" android/app/build.gradle || true
             sed -i "s/versionName \"1.0\"/versionName \"$VERSION_NAME\"/g" android/app/build.gradle || true
           fi
 
-          # Ensure Android Notification, Microphone, Camera, Storage & Share Target Permissions in AndroidManifest.xml
-          npm run configure:android || true
+          # Apply google-services.json, AndroidManifest permissions, FileProvider safety, and MainActivity bridge
+          npm run configure:android
+
+          # Verify FileProvider is NOT exported (prevents fatal SecurityException on launch)
+          if grep -A 5 "androidx.core.content.FileProvider" android/app/src/main/AndroidManifest.xml | grep -q 'android:exported="true"'; then
+            echo "FATAL: FileProvider must never have android:exported=true!"
+            exit 1
+          fi
+          echo "Verified AndroidManifest.xml FileProvider security configuration."
 
       - name: Grant Execute Permission for Gradle
         run: |
           cd android
           chmod +x gradlew
 
-      - name: Build Android APK (${{ github.event.inputs.build_type || 'debug' }})
+      - name: Build & Sign Android APK (${{ github.event.inputs.build_type || 'debug' }})
         run: |
           cd android
           BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
           if [ "$BUILD_TYPE" = "release" ]; then
             ./gradlew assembleRelease
+            UNSIGNED_APK="app/build/outputs/apk/release/app-release-unsigned.apk"
+            SIGNED_APK="app/build/outputs/apk/release/app-release.apk"
+            if [ -f "$UNSIGNED_APK" ]; then
+              KEYSTORE_PATH="/tmp/connexa-release.keystore"
+              keytool -genkeypair -v \
+                -keystore "$KEYSTORE_PATH" \
+                -alias connexa \
+                -keyalg RSA \
+                -keysize 2048 \
+                -validity 10000 \
+                -storepass connexa123 \
+                -keypass connexa123 \
+                -dname "CN=Connexa Messenger, OU=Mobile, O=Connexa, L=City, S=State, C=US"
+              BUILD_TOOLS_DIR=$(ls -d $ANDROID_HOME/build-tools/* | sort -V | tail -n 1)
+              "$BUILD_TOOLS_DIR/zipalign" -v -p 4 "$UNSIGNED_APK" "/tmp/app-release-aligned.apk"
+              "$BUILD_TOOLS_DIR/apksigner" sign \
+                --ks "$KEYSTORE_PATH" \
+                --ks-key-alias connexa \
+                --ks-pass pass:connexa123 \
+                --key-pass pass:connexa123 \
+                --out "$SIGNED_APK" \
+                "/tmp/app-release-aligned.apk"
+              "$BUILD_TOOLS_DIR/apksigner" verify "$SIGNED_APK"
+            fi
           else
             ./gradlew assembleDebug
           fi
@@ -109,28 +138,25 @@ jobs:
         run: |
           VERSION_NAME="${{ github.event.inputs.version_name || '1.0.0' }}"
           BUILD_TYPE="${{ github.event.inputs.build_type || 'debug' }}"
-          
+
           mkdir -p output_apk
-          
-          if [ "$BUILD_TYPE" = "release" ] && [ -f "android/app/build/outputs/apk/release/app-release-unsigned.apk" ]; then
-            # Copy unsigned release APK
-            cp android/app/build/outputs/apk/release/app-release-unsigned.apk output_apk/Connexa-v${VERSION_NAME}-release-unsigned.apk
-            echo "apk_path=output_apk/Connexa-v${VERSION_NAME}-release-unsigned.apk" >> $GITHUB_OUTPUT
-            echo "apk_name=Connexa-v${VERSION_NAME}-release-unsigned.apk" >> $GITHUB_OUTPUT
+
+          if [ "$BUILD_TYPE" = "release" ] && [ -f "android/app/build/outputs/apk/release/app-release.apk" ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk output_apk/Connexa-v${VERSION_NAME}-release.apk
+            echo "apk_path=output_apk/Connexa-v${VERSION_NAME}-release.apk" >> $GITHUB_OUTPUT
+            echo "apk_name=Connexa-v${VERSION_NAME}-release.apk" >> $GITHUB_OUTPUT
           elif [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
-            # Copy debug APK (ready to install immediately on any phone)
             cp android/app/build/outputs/apk/debug/app-debug.apk output_apk/Connexa-v${VERSION_NAME}-debug.apk
             echo "apk_path=output_apk/Connexa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
             echo "apk_name=Connexa-v${VERSION_NAME}-debug.apk" >> $GITHUB_OUTPUT
           else
-            # Fallback search for any generated APK
-            FOUND_APK=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+            FOUND_APK=$(find android/app/build/outputs/apk -name "*.apk" ! -name "*-unsigned.apk" | head -n 1)
             if [ -n "$FOUND_APK" ]; then
               cp "$FOUND_APK" output_apk/Connexa-v${VERSION_NAME}.apk
               echo "apk_path=output_apk/Connexa-v${VERSION_NAME}.apk" >> $GITHUB_OUTPUT
               echo "apk_name=Connexa-v${VERSION_NAME}.apk" >> $GITHUB_OUTPUT
             else
-              echo "Error: No APK file was generated."
+              echo "Error: No installable signed APK file was generated."
               exit 1
             fi
           fi

@@ -12,7 +12,7 @@
   },
   "plugins": {
     "LocalNotifications": {
-      "smallIcon": "ic_launcher",
+      "smallIcon": "ic_stat_connexa",
       "iconColor": "#2563EB"
     },
     "PushNotifications": {

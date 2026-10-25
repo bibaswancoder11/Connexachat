@@ -368,12 +368,12 @@ export const showWebNotification = async (
             title: title,
             body: options?.body || '',
             channelId: options?.channelId || 'connexa_messages_channel',
-            smallIcon: 'ic_launcher',
+            smallIcon: 'ic_stat_connexa',
             iconColor: '#2563EB',
             extra: options?.data || {},
             actionTypeId: 'OPEN_CHAT',
-            schedule: { at: new Date(Date.now() + 50) },
-          }
+            isExactNotification: false,
+          } as any
         ]
       });
 

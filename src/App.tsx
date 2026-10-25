@@ -12,7 +12,7 @@ import { NotificationToast, ToastNotificationData } from './components/Notificat
 import { ChatRoom, FriendRequest, UserProfile } from './types';
 import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
 import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends, checkIsFriend, sendFriendRequest } from './services/friendService';
-import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, initPushNotifications, onNotificationAction } from './services/notificationService';
+import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, onNotificationAction } from './services/notificationService';
 import { MessageSquare, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 import { UniversalShareModal, UniversalSharePayload } from './components/UniversalShareModal';
@@ -123,8 +123,8 @@ const ConnexaApp: React.FC = () => {
   // Ask for Push Notification permission & register FCM & Web Push on login
   useEffect(() => {
     if (currentUser) {
-      requestNotificationPermission(currentUser.uid);
-      initPushNotifications(currentUser.uid);
+      // requestNotificationPermission handles Android runtime permission sequentially and initializes push tokens once granted
+      requestNotificationPermission(currentUser.uid).catch(() => {});
 
       // Check if launched via notification click query parameter ?chatId=...
       try {
