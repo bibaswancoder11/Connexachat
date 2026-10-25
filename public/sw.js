@@ -103,7 +103,7 @@ function isVisualMediaFile(file) {
   const mime = (file?.type || '').toLowerCase();
   if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
   const name = (file?.name || '').toLowerCase();
-  return /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg|mp4|webm|mov|mkv|avi|m4v)$/.test(name);
+  return /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg|mp4|webm|mov|mkv|avi|m4v|3gp)$/.test(name);
 }
 
 // Intercept Web Share Target POST requests (Images, Videos, Documents, Links, Text)

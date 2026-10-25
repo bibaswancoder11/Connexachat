@@ -15,6 +15,7 @@ import {
 import { UserProfile, ChatRoom } from '../types';
 import { isUserBlockedLocally } from '../services/blockService';
 import { getOrCreateChat, sendMessage } from '../services/chatService';
+import { uploadLargeMedia } from '../services/mediaStorageService';
 import { compressImage } from '../utils/imageUtils';
 import { processVideoFile } from '../utils/mediaUtils';
 import { EnlargeableAvatar } from './EnlargeableAvatar';
@@ -23,6 +24,9 @@ import { PendingSharePayload } from '../utils/apkIntentHandler';
 export interface SharedMediaItem {
   type: 'image' | 'video';
   dataUrl: string;
+  file?: File | Blob;
+  size?: number;
+  mimeType?: string;
   thumbnailUrl?: string;
   duration?: number;
   filename?: string;
@@ -61,6 +65,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>('');
   const [sendingRecipientId, setSendingRecipientId] = useState<string | null>(null);
   const [sentRecipientIds, setSentRecipientIds] = useState<Set<string>>(new Set());
   const [showCaptionEdit, setShowCaptionEdit] = useState(false);
@@ -105,7 +111,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   // Group chats available
   const groupChats = useMemo(() => chats.filter(c => c.isGroup), [chats]);
 
-  // Combine direct accepted friends with any 1-on-1 chat contacts so all friends are accessible
+  // Strictly restrict 1-on-1 recipients to accepted friends
   const availableFriends = useMemo(() => {
     const map = new Map<string, UserProfile>();
     friends.forEach(f => {
@@ -113,18 +119,11 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
         map.set(f.uid, f);
       }
     });
-    chats.forEach(c => {
-      if (!c.isGroup && c.otherUser && c.otherUser.uid !== currentUser.uid) {
-        if (!map.has(c.otherUser.uid)) {
-          map.set(c.otherUser.uid, c.otherUser);
-        }
-      }
-    });
     return Array.from(map.values()).map(friend => ({
       ...friend,
       isBlocked: isUserBlockedLocally(currentUser.uid, friend.uid)
     }));
-  }, [friends, chats, currentUser.uid]);
+  }, [friends, currentUser.uid]);
 
   const filteredFriends = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
@@ -162,9 +161,10 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
 
   const handleToggleRecipient = (id: string, isBlocked = false) => {
     if (isBlocked) {
-      alert('This user is currently blocked on your device. Unblock them first to share media.');
+      setErrorMessage('This user is currently blocked on your device. Unblock them first to share media.');
       return;
     }
+    setErrorMessage('');
     setSelectedRecipientIds(prev => 
       prev.includes(id) ? prev.filter(r => r !== id) : [...prev, id]
     );
@@ -175,6 +175,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     if (!files || files.length === 0) return;
 
     setIsProcessingFiles(true);
+    setErrorMessage('');
 
     const newItems: SharedMediaItem[] = [];
 
@@ -186,20 +187,25 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
           newItems.push({
             type: 'image',
             dataUrl: compressed,
+            size: file.size,
+            mimeType: file.type || 'image/jpeg',
             filename: file.name
           });
-        } else if (file.type.startsWith('video/')) {
+        } else {
           const meta = await processVideoFile(file);
           newItems.push({
             type: 'video',
             dataUrl: meta.dataUrl,
+            file: meta.file,
+            size: meta.size,
+            mimeType: meta.mimeType,
             thumbnailUrl: meta.thumbnailUrl,
             duration: meta.duration,
             filename: file.name
           });
         }
       } catch (err: any) {
-        alert(err.message || `Failed to process ${file.name}`);
+        setErrorMessage(err?.message || `Failed to process ${file.name}`);
       }
     }
 
@@ -212,19 +218,21 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     setMediaItems(prev => prev.filter((_, idx) => idx !== index));
   };
 
-  // 1-Tap automatic send to one or multiple recipients (matching ShareLinkModal)
+  // 1-Tap automatic send to one or multiple recipients (supports videos up to 55MB)
   const handleSendToRecipients = async (targetRecipientIds: string[]) => {
     if (targetRecipientIds.length === 0) {
-      alert('Please select at least one friend or group.');
+      setErrorMessage('Please select at least one friend or group.');
       return;
     }
 
     if (mediaItems.length === 0 && !caption.trim()) {
-      alert('Please add at least one photo, video, or message.');
+      setErrorMessage('Please add at least one photo, video, or message.');
       return;
     }
 
     setIsSending(true);
+    setUploadProgress(null);
+    setErrorMessage('');
     if (targetRecipientIds.length === 1) {
       setSendingRecipientId(targetRecipientIds[0]);
     }
@@ -232,6 +240,27 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
     const affectedChatIds: string[] = [];
 
     try {
+      // Pre-upload media items ONCE (especially important for videos up to 55MB)
+      const uploadedItems: SharedMediaItem[] = [];
+      for (let idx = 0; idx < mediaItems.length; idx++) {
+        const item = mediaItems[idx];
+        const uploadedUrl = await uploadLargeMedia({
+          blob: item.file,
+          dataUrl: item.dataUrl,
+          mimeType: item.mimeType,
+          filename: item.filename,
+          uploaderId: currentUser.uid,
+          onProgress: (pct) => {
+            setUploadProgress(Math.round(((idx * 100 + pct) / mediaItems.length)));
+          }
+        });
+        uploadedItems.push({
+          ...item,
+          dataUrl: uploadedUrl,
+          file: undefined
+        });
+      }
+
       for (const recipientId of targetRecipientIds) {
         let targetChatId = recipientId;
         const isFriend = availableFriends.some(f => f.uid === recipientId);
@@ -242,9 +271,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
         affectedChatIds.push(targetChatId);
 
         // 1. Send all media items to this chat
-        for (let m = 0; m < mediaItems.length; m++) {
-          const item = mediaItems[m];
-          // Attach caption with first media item
+        for (let m = 0; m < uploadedItems.length; m++) {
+          const item = uploadedItems[m];
           const itemCaption = (m === 0 && caption.trim()) ? caption.trim() : '';
 
           if (item.type === 'image') {
@@ -266,14 +294,17 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               currentUser,
               {
                 mediaThumbnail: item.thumbnailUrl,
-                mediaDuration: item.duration
+                mediaDuration: item.duration,
+                mediaSize: item.size,
+                filename: item.filename,
+                fileType: item.mimeType
               }
             );
           }
         }
 
         // 2. If no media attached but text caption was entered
-        if (mediaItems.length === 0 && caption.trim()) {
+        if (uploadedItems.length === 0 && caption.trim()) {
           await sendMessage(
             targetChatId,
             currentUser.uid,
@@ -287,7 +318,6 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
         setSentRecipientIds(prev => new Set([...prev, recipientId]));
       }
 
-      // Automatically complete and open chat or return
       setTimeout(() => {
         if (onSuccess) {
           onSuccess(affectedChatIds);
@@ -295,11 +325,12 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
           onClose();
         }
       }, 350);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error sharing media:', err);
-      alert('Failed to send media. Please check your connection and try again.');
+      setErrorMessage(err?.message || 'Failed to send media. Please check your connection and try again.');
     } finally {
       setIsSending(false);
+      setUploadProgress(null);
       setSendingRecipientId(null);
     }
   };
@@ -452,6 +483,12 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
             </div>
           )}
         </div>
+
+        {errorMessage && (
+          <div className="px-4 py-2 bg-rose-50 dark:bg-rose-950/50 border-b border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-700 dark:text-rose-300 shrink-0">
+            {errorMessage}
+          </div>
+        )}
 
         {/* Search Input - Identical to ShareLinkModal */}
         <div className="p-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
@@ -684,7 +721,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                 {isSending ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Sending...</span>
+                    <span>{uploadProgress !== null ? `Uploading ${uploadProgress}%...` : 'Sending...'}</span>
                   </>
                 ) : (
                   <>

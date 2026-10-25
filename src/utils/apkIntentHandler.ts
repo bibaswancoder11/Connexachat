@@ -9,7 +9,8 @@ import { SharedMediaItem } from '../components/ShareMediaModal';
 import { UniversalSharePayload, UniversalShareItem } from '../components/UniversalShareModal';
 export type { UniversalSharePayload, UniversalShareItem };
 import { compressImage } from './imageUtils';
-import { processVideoFile } from './mediaUtils';
+import { processVideoFile, MAX_VIDEO_SIZE_BYTES, MAX_VIDEO_SIZE_MB } from './mediaUtils';
+import { base64ToUint8Array, CHUNK_RAW_BYTES } from '../services/mediaStorageService';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 
@@ -106,10 +107,12 @@ export function notifyShareIntent(payload: PendingSharePayload) {
   const items: UniversalShareItem[] = (payload.items || []).map(item => ({
     type: item.type,
     dataUrl: item.dataUrl,
+    file: item.file,
+    mimeType: item.mimeType,
     thumbnailUrl: item.thumbnailUrl,
     duration: item.duration,
     filename: item.filename,
-    size: 'size' in item && typeof (item as { size?: number }).size === 'number' ? (item as { size?: number }).size : undefined
+    size: item.size
   }));
   notifyUniversalShareIntent({
     type: items.length > 0 ? 'media' : 'text',
@@ -166,7 +169,7 @@ function classifyFileCategory(file: File): 'image' | 'video' | 'file' {
 }
 
 /**
- * Handle incoming files (photos, videos, PDFs, Office docs, archives, audio, any file)
+ * Handle incoming files (photos, videos up to 55MB, PDFs, Office docs, archives, audio, any file)
  */
 export async function processIncomingFilesForSharing(files: FileList | File[]): Promise<UniversalShareItem[]> {
   const items: UniversalShareItem[] = [];
@@ -188,44 +191,69 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
             mimeType: file.type || 'image/jpeg'
           });
         } catch {
-          // Fallback to raw DataURL if SVG/HEIC canvas compression fails
-          const rawDataUrl = await readFileAsDataUrl(file);
+          const previewUrl = URL.createObjectURL(file);
           items.push({
             type: 'image',
-            dataUrl: rawDataUrl,
+            dataUrl: previewUrl,
+            file,
             filename: file.name,
             size: file.size,
             mimeType: file.type || 'image/png'
           });
         }
       } else if (category === 'video') {
+        if (file.size > MAX_VIDEO_SIZE_BYTES) {
+          items.push({
+            type: 'video',
+            dataUrl: '',
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type || 'video/mp4',
+            error: `Video file "${file.name || 'clip'}" is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Maximum supported video size is ${MAX_VIDEO_SIZE_MB}MB.`
+          });
+          continue;
+        }
         try {
-          const meta = await processVideoFile(file);
+          const meta = await processVideoFile(file, MAX_VIDEO_SIZE_BYTES);
           items.push({
             type: 'video',
             dataUrl: meta.dataUrl,
+            file: meta.file || file,
             thumbnailUrl: meta.thumbnailUrl,
             duration: meta.duration,
             filename: file.name,
             size: file.size,
-            mimeType: file.type || 'video/mp4'
+            mimeType: meta.mimeType || file.type || 'video/mp4'
           });
         } catch {
-          const rawDataUrl = await readFileAsDataUrl(file);
+          const blobUrl = URL.createObjectURL(file);
           items.push({
             type: 'video',
-            dataUrl: rawDataUrl,
+            dataUrl: blobUrl,
+            file,
             filename: file.name,
             size: file.size,
             mimeType: file.type || 'video/mp4'
           });
         }
       } else {
-        // Document / PDF / Audio / Archive / Any file
-        const dataUrl = await readFileAsDataUrl(file);
+        // Document / PDF / Audio / Archive / Any file (up to 55MB via streaming Blob)
+        if (file.size > MAX_VIDEO_SIZE_BYTES) {
+          items.push({
+            type: 'file',
+            dataUrl: '',
+            filename: file.name || 'Document',
+            size: file.size,
+            mimeType: file.type || 'application/octet-stream',
+            error: `File "${file.name || 'Document'}" is ${(file.size / (1024 * 1024)).toFixed(1)}MB. Maximum supported file size is ${MAX_VIDEO_SIZE_MB}MB.`
+          });
+          continue;
+        }
+        const blobUrl = URL.createObjectURL(file);
         items.push({
           type: 'file',
-          dataUrl,
+          dataUrl: blobUrl,
+          file,
           filename: file.name || 'Document',
           size: file.size,
           mimeType: file.type || 'application/octet-stream'
@@ -325,10 +353,101 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
 }
 
 /**
- * Check Native Android JavascriptInterface Bridge (MainActivity.java -> ConnexaAndroidShare)
- * Completely immune to cold-start WebView timing races and 5MB localStorage limits!
+ * Hydrate any native Android temp-file references (nativeFileId) or server temp-file URLs (tempFileUrl)
+ * into real File/Blob objects with thumbnails so 55MB videos never cause Java/WebView OOM.
  */
-export function checkNativeAndroidShareBridge(): boolean {
+async function hydrateExternalSharedItems(rawItems: any[], bridge?: any): Promise<UniversalShareItem[]> {
+  const hydrated: UniversalShareItem[] = [];
+  const filesToProcess: File[] = [];
+
+  for (const raw of rawItems) {
+    if (!raw) continue;
+
+    if (raw.error) {
+      hydrated.push({
+        type: raw.type || 'video',
+        dataUrl: '',
+        filename: raw.filename,
+        size: raw.size,
+        mimeType: raw.mimeType,
+        error: raw.error
+      });
+      continue;
+    }
+
+    // 1. Native Android chunked file bridge (supports 55MB+ videos with ~2MB RAM overhead)
+    if (raw.nativeFileId && bridge && typeof bridge.getSharedFileChunkBase64 === 'function') {
+      try {
+        const totalSize = Number(raw.size || 0);
+        const parts: BlobPart[] = [];
+        let offset = 0;
+        const step = CHUNK_RAW_BYTES;
+
+        while (true) {
+          const b64Chunk = bridge.getSharedFileChunkBase64(raw.nativeFileId, offset, step);
+          if (!b64Chunk || typeof b64Chunk !== 'string' || b64Chunk.length === 0) {
+            break;
+          }
+          const bytes = base64ToUint8Array(b64Chunk);
+          if (bytes.byteLength === 0) break;
+          parts.push(bytes);
+          offset += bytes.byteLength;
+          if (totalSize > 0 && offset >= totalSize) break;
+        }
+
+        if (typeof bridge.deleteSharedTempFile === 'function') {
+          try {
+            bridge.deleteSharedTempFile(raw.nativeFileId);
+          } catch {
+            // ignore
+          }
+        }
+
+        if (parts.length > 0) {
+          const reconstructed = new File(parts, raw.filename || 'shared_video.mp4', {
+            type: raw.mimeType || 'application/octet-stream'
+          });
+          filesToProcess.push(reconstructed);
+          continue;
+        }
+      } catch (err) {
+        console.warn('Failed reading chunked native shared file:', err);
+      }
+    }
+
+    // 2. Express fallback /api/shared-temp/:id binary stream
+    if (raw.tempFileUrl && typeof raw.tempFileUrl === 'string') {
+      try {
+        const resp = await fetch(raw.tempFileUrl);
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const reconstructed = new File([blob], raw.filename || 'shared_file', {
+            type: raw.mimeType || blob.type || 'application/octet-stream'
+          });
+          filesToProcess.push(reconstructed);
+          continue;
+        }
+      } catch (err) {
+        console.warn('Failed fetching temp shared file:', err);
+      }
+    }
+
+    hydrated.push(raw as UniversalShareItem);
+  }
+
+  if (filesToProcess.length > 0) {
+    const processed = await processIncomingFilesForSharing(filesToProcess);
+    hydrated.push(...processed);
+  }
+
+  return hydrated;
+}
+
+/**
+ * Check Native Android JavascriptInterface Bridge (MainActivity.java -> ConnexaAndroidShare)
+ * Completely immune to cold-start WebView timing races, 5MB localStorage limits, and 55MB OOMs!
+ */
+export async function checkNativeAndroidShareBridge(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
   try {
     const bridge = (window as any).ConnexaAndroidShare;
@@ -337,6 +456,9 @@ export function checkNativeAndroidShareBridge(): boolean {
       if (rawJson && typeof rawJson === 'string') {
         const parsed = JSON.parse(rawJson);
         if (parsed) {
+          if (Array.isArray(parsed.items) && parsed.items.length > 0) {
+            parsed.items = await hydrateExternalSharedItems(parsed.items, bridge);
+          }
           notifyUniversalShareIntent(parsed);
           return true;
         }
@@ -359,8 +481,8 @@ export async function checkPendingShareTargets() {
   isCheckingPending = true;
 
   try {
-    // 1. Check Native Android JavascriptInterface Bridge first (highest priority, supports large files/videos/PDFs)
-    if (checkNativeAndroidShareBridge()) {
+    // 1. Check Native Android JavascriptInterface Bridge first (highest priority, supports 55MB videos/PDFs)
+    if (await checkNativeAndroidShareBridge()) {
       return;
     }
 
@@ -435,10 +557,11 @@ export async function checkPendingShareTargets() {
       cleanShareUrlParams();
 
       if (record.items && record.items.length > 0) {
-        const hasDoc = record.items.some(i => i.type === 'file') && !record.items.some(i => i.type === 'image' || i.type === 'video');
+        const hydratedItems = await hydrateExternalSharedItems(record.items);
+        const hasDoc = hydratedItems.some(i => i.type === 'file') && !hydratedItems.some(i => i.type === 'image' || i.type === 'video');
         notifyUniversalShareIntent({
           type: hasDoc ? 'file' : 'media',
-          items: record.items,
+          items: hydratedItems,
           title: record.title,
           caption: record.text,
           text: record.text,
@@ -706,7 +829,7 @@ export function initShareTargetListener() {
       });
 
       CapApp.addListener('appUrlOpen', async (data) => {
-        if (checkNativeAndroidShareBridge()) return;
+        if (await checkNativeAndroidShareBridge()) return;
         if (!data?.url) return;
         try {
           const parsed = new URL(data.url);

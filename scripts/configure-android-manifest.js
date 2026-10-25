@@ -57,9 +57,13 @@ featuresToAdd.forEach(feat => {
   }
 });
 
-// 3. Application & MainActivity Attributes (ensure exported="true" and singleTask so Share Sheet intents always work)
+// 3. Application & MainActivity Attributes (ensure exported="true", largeHeap="true" for 55MB media, and Share Sheet intents)
 if (!content.includes('android:requestLegacyExternalStorage="true"')) {
   content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"');
+}
+
+if (!content.includes('android:largeHeap="true"')) {
+  content = content.replace('<application', '<application android:largeHeap="true"');
 }
 
 if (content.includes('android:exported="false"')) {
@@ -156,7 +160,7 @@ if (mainActivityPath && fs.existsSync(mainActivityPath)) {
   const pkgMatch = existingMain.match(/package\s+([a-zA-Z0-9_.]+)\s*;/);
   const packageName = pkgMatch ? pkgMatch[1] : 'com.connexa.messenger';
 
-  if (!existingMain.includes('ConnexaAndroidShare')) {
+  if (!existingMain.includes('getSharedFileChunkBase64')) {
     const updatedMainActivityJava = `package ${packageName};
 
 import com.getcapacitor.BridgeActivity;
@@ -171,18 +175,30 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import org.json.JSONArray;
 import org.json.JSONObject;
-import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends BridgeActivity {
 
+    private static final long MAX_SHARED_FILE_BYTES = 55L * 1024L * 1024L; // 55 MB limit
     private volatile String pendingSharedPayloadJson = null;
     private final ExecutorService shareExecutor = Executors.newSingleThreadExecutor();
+
+    private File getShareCacheDir() {
+        File dir = new File(getCacheDir(), "connexa_shared_cache");
+        if (!dir.exists()) {
+            dir.mkdirs();
+        }
+        return dir;
+    }
 
     public class ConnexaShareBridge {
         @JavascriptInterface
@@ -195,6 +211,53 @@ public class MainActivity extends BridgeActivity {
             String payload = pendingSharedPayloadJson;
             pendingSharedPayloadJson = null;
             return payload;
+        }
+
+        @JavascriptInterface
+        public String getSharedFileChunkBase64(String fileId, double offsetDouble, int length) {
+            try {
+                if (fileId == null || fileId.contains("/") || fileId.contains("\\\\") || fileId.contains("..")) {
+                    return "";
+                }
+                File target = new File(getShareCacheDir(), fileId);
+                if (!target.exists()) return "";
+                long offset = (long) offsetDouble;
+                long fileLen = target.length();
+                if (offset < 0 || offset >= fileLen || length <= 0) return "";
+
+                int toRead = (int) Math.min((long) length, fileLen - offset);
+                byte[] buf = new byte[toRead];
+                RandomAccessFile raf = new RandomAccessFile(target, "r");
+                try {
+                    raf.seek(offset);
+                    int actual = raf.read(buf, 0, toRead);
+                    if (actual <= 0) return "";
+                    if (actual < toRead) {
+                        byte[] exact = new byte[actual];
+                        System.arraycopy(buf, 0, exact, 0, actual);
+                        return Base64.encodeToString(exact, Base64.NO_WRAP);
+                    }
+                    return Base64.encodeToString(buf, Base64.NO_WRAP);
+                } finally {
+                    raf.close();
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void deleteSharedTempFile(String fileId) {
+            try {
+                if (fileId == null || fileId.contains("/") || fileId.contains("\\\\") || fileId.contains("..")) {
+                    return;
+                }
+                File target = new File(getShareCacheDir(), fileId);
+                if (target.exists()) {
+                    target.delete();
+                }
+            } catch (Exception ignored) {}
         }
     }
 
@@ -224,7 +287,6 @@ public class MainActivity extends BridgeActivity {
             return;
         }
 
-        // Collect all shared URIs from both EXTRA_STREAM and ClipData (modern Android apps use either or both)
         final Set<Uri> uriSet = new LinkedHashSet<>();
 
         if (Intent.ACTION_SEND.equals(action)) {
@@ -254,13 +316,11 @@ public class MainActivity extends BridgeActivity {
         final String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
         final String sharedTitle = intent.getStringExtra(Intent.EXTRA_SUBJECT);
 
-        // Reset intent action immediately so screen rotation or app resume never re-fires an already handled share
         intent.setAction(Intent.ACTION_MAIN);
         intent.removeExtra(Intent.EXTRA_STREAM);
         intent.removeExtra(Intent.EXTRA_TEXT);
         intent.setClipData(null);
 
-        // Process file streams asynchronously on background thread so large videos/PDFs never freeze UI
         shareExecutor.execute(() -> {
             try {
                 JSONObject payload = new JSONObject();
@@ -295,7 +355,6 @@ public class MainActivity extends BridgeActivity {
                     }
                 }
 
-                // Link or Text share (e.g., Chrome, YouTube, Instagram, Notes)
                 if (sharedText != null && !sharedText.trim().isEmpty()) {
                     String trimmed = sharedText.trim();
                     String extractedUrl = extractUrlFromText(trimmed);
@@ -322,7 +381,7 @@ public class MainActivity extends BridgeActivity {
     private JSONObject uriToShareItem(Uri uri, String fallbackMimeType) {
         try {
             String filename = "shared_file";
-            long size = 0;
+            long declaredSize = 0;
 
             Cursor cursor = getContentResolver().query(uri, null, null, null, null);
             if (cursor != null) {
@@ -334,7 +393,7 @@ public class MainActivity extends BridgeActivity {
                             filename = cursor.getString(nameIndex);
                         }
                         if (sizeIndex != -1) {
-                            size = cursor.getLong(sizeIndex);
+                            declaredSize = cursor.getLong(sizeIndex);
                         }
                     }
                 } finally {
@@ -359,36 +418,61 @@ public class MainActivity extends BridgeActivity {
                 itemType = "video";
             }
 
+            if (declaredSize > MAX_SHARED_FILE_BYTES) {
+                JSONObject tooLarge = new JSONObject();
+                tooLarge.put("type", itemType);
+                tooLarge.put("dataUrl", "");
+                tooLarge.put("filename", filename);
+                tooLarge.put("size", declaredSize);
+                tooLarge.put("mimeType", actualMime);
+                tooLarge.put("error", ("video".equals(itemType) ? "Video" : "File") + " exceeds the 55MB sharing limit.");
+                return tooLarge;
+            }
+
             InputStream is = getContentResolver().openInputStream(uri);
             if (is == null) return null;
 
-            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-            int nRead;
-            byte[] data = new byte[32768];
-            long totalRead = 0;
-            final long MAX_BYTES = 35L * 1024L * 1024L; // 35 MB safety cap
+            String tempFileId = "share_" + UUID.randomUUID().toString() + ".bin";
+            File outFile = new File(getShareCacheDir(), tempFileId);
+            long totalWritten = 0;
+            boolean exceededLimit = false;
+
+            FileOutputStream fos = new FileOutputStream(outFile);
             try {
-                while ((nRead = is.read(data, 0, data.length)) != -1) {
-                    totalRead += nRead;
-                    if (totalRead > MAX_BYTES) {
+                byte[] buffer = new byte[65536];
+                int nRead;
+                while ((nRead = is.read(buffer, 0, buffer.length)) != -1) {
+                    totalWritten += nRead;
+                    if (totalWritten > MAX_SHARED_FILE_BYTES) {
+                        exceededLimit = true;
                         break;
                     }
-                    buffer.write(data, 0, nRead);
+                    fos.write(buffer, 0, nRead);
                 }
-                buffer.flush();
+                fos.flush();
             } finally {
-                is.close();
+                try { fos.close(); } catch (Exception ignored) {}
+                try { is.close(); } catch (Exception ignored) {}
             }
 
-            byte[] fileBytes = buffer.toByteArray();
-            String base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP);
-            String dataUrl = "data:" + actualMime + ";base64," + base64Data;
+            if (exceededLimit) {
+                outFile.delete();
+                JSONObject tooLarge = new JSONObject();
+                tooLarge.put("type", itemType);
+                tooLarge.put("dataUrl", "");
+                tooLarge.put("filename", filename);
+                tooLarge.put("size", totalWritten);
+                tooLarge.put("mimeType", actualMime);
+                tooLarge.put("error", ("video".equals(itemType) ? "Video" : "File") + " exceeds the 55MB sharing limit.");
+                return tooLarge;
+            }
 
             JSONObject obj = new JSONObject();
             obj.put("type", itemType);
-            obj.put("dataUrl", dataUrl);
+            obj.put("dataUrl", "");
+            obj.put("nativeFileId", tempFileId);
             obj.put("filename", filename);
-            obj.put("size", size > 0 ? size : fileBytes.length);
+            obj.put("size", totalWritten > 0 ? totalWritten : declaredSize);
             obj.put("mimeType", actualMime);
             return obj;
         } catch (Exception e) {
@@ -417,6 +501,10 @@ public class MainActivity extends BridgeActivity {
         if (lower.endsWith(".png")) return "image/png";
         if (lower.endsWith(".webp")) return "image/webp";
         if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".webm")) return "video/webm";
+        if (lower.endsWith(".mov")) return "video/quicktime";
+        if (lower.endsWith(".mkv")) return "video/x-matroska";
+        if (lower.endsWith(".3gp")) return "video/3gpp";
         return "application/octet-stream";
     }
 
@@ -456,6 +544,6 @@ public class MainActivity extends BridgeActivity {
 `;
 
     fs.writeFileSync(mainActivityPath, updatedMainActivityJava, 'utf8');
-    console.log('✅ MainActivity.java configured with ConnexaAndroidShare @JavascriptInterface bridge & async ClipData/Stream share handler!');
+    console.log('✅ MainActivity.java configured with 55MB streaming ConnexaAndroidShare @JavascriptInterface bridge!');
   }
 }

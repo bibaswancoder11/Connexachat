@@ -45,11 +45,15 @@ import { ChatRoom, ChatMessage, UserProfile } from '../types';
 import { compressImage, downloadImageDataUrl } from '../utils/imageUtils';
 import { 
   processVideoFile, 
+  isSupportedVideoFile,
   requestMicrophonePermission, 
   requestCameraPermission, 
   downloadVideoDataUrl,
+  MAX_VIDEO_SIZE_BYTES,
+  MAX_VIDEO_SIZE_MB,
   VideoMetadata 
 } from '../utils/mediaUtils';
+import { isChunkedMediaUrl } from '../services/mediaStorageService';
 import { 
   subscribeToMessages, 
   sendMessage, 
@@ -117,11 +121,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [recordingTime, setRecordingTime] = useState(0);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   
-  // Media Attachments
+  // Media Attachments & Upload Progress
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [selectedVideo, setSelectedVideo] = useState<VideoMetadata | null>(null);
   const [isProcessingMedia, setIsProcessingMedia] = useState(false);
   const [mediaProcessingLabel, setMediaProcessingLabel] = useState('');
+  const [uploadProgressPercent, setUploadProgressPercent] = useState<number | null>(null);
+  const [mediaError, setMediaError] = useState<string | null>(null);
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
 
@@ -275,12 +282,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Process & compress an image file before attaching
   const processAndSetImageFile = async (file: File) => {
+    setMediaError(null);
     if (!file.type.startsWith('image/')) {
-      alert('Please select a valid image file (PNG, JPG, WebP, GIF).');
+      setMediaError('Please select a valid image file (PNG, JPG, WebP, GIF).');
       return;
     }
     if (file.size > 20 * 1024 * 1024) {
-      alert('Image file is too large. Please select an image under 20MB.');
+      setMediaError('Image file is too large. Please select an image under 20MB.');
       return;
     }
     setIsProcessingMedia(true);
@@ -295,7 +303,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setSelectedVideo(null);
     } catch (err) {
       console.error('Failed to process image:', err);
-      alert('Could not process image. Please try another photo.');
+      setMediaError('Could not process image. Please try another photo.');
     } finally {
       setIsProcessingMedia(false);
       setMediaProcessingLabel('');
@@ -303,21 +311,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Process a video file before attaching
+  // Process a video file (up to 55MB) before attaching
   const processAndSetVideoFile = async (file: File) => {
-    if (!file.type.startsWith('video/')) {
-      alert('Please select a valid video file (MP4, WebM, MOV).');
+    setMediaError(null);
+    if (!isSupportedVideoFile(file, file.name)) {
+      setMediaError('Please select a valid video file (MP4, WebM, MOV, MKV, 3GP).');
+      return;
+    }
+    if (file.size > MAX_VIDEO_SIZE_BYTES) {
+      setMediaError(
+        `Video file is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported video size is ${MAX_VIDEO_SIZE_MB}MB.`
+      );
+      if (videoInputRef.current) videoInputRef.current.value = '';
       return;
     }
     setIsProcessingMedia(true);
-    setMediaProcessingLabel('Processing video clip...');
+    setMediaProcessingLabel('Preparing video preview...');
     try {
-      const meta = await processVideoFile(file);
+      const meta = await processVideoFile(file, MAX_VIDEO_SIZE_BYTES);
       setSelectedVideo(meta);
       setSelectedImage(null);
     } catch (err: any) {
       console.error('Failed to process video:', err);
-      alert(err.message || 'Could not process video file.');
+      setMediaError(err.message || 'Could not process video file.');
     } finally {
       setIsProcessingMedia(false);
       setMediaProcessingLabel('');
@@ -333,47 +349,45 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Process & send document files (PDF, Word, TXT, Excel, ZIP, etc.)
+  // Process & send document files (PDF, Word, TXT, Excel, ZIP, etc. up to 55MB)
   const processAndSendDocumentFile = async (file: File) => {
     if (!userProfile || !chat.id || isBlocked) return;
-    if (file.size > 25 * 1024 * 1024) {
-      alert('File size exceeds the 25MB limit.');
+    setMediaError(null);
+    if (file.size > MAX_VIDEO_SIZE_BYTES) {
+      setMediaError(`File size (${(file.size / (1024 * 1024)).toFixed(1)}MB) exceeds the ${MAX_VIDEO_SIZE_MB}MB limit.`);
+      if (documentInputRef.current) documentInputRef.current.value = '';
       return;
     }
 
     setIsProcessingMedia(true);
+    setUploadProgressPercent(0);
     setMediaProcessingLabel(`Uploading ${file.name}...`);
     try {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const dataUrl = reader.result as string;
-        await sendMessage(
-          chat.id,
-          userProfile.uid,
-          '',
-          'file',
-          dataUrl,
-          userProfile,
-          {
-            filename: file.name,
-            mediaSize: file.size,
-            fileType: file.type || 'application/octet-stream'
+      await sendMessage(
+        chat.id,
+        userProfile.uid,
+        '',
+        'file',
+        undefined,
+        userProfile,
+        {
+          mediaBlob: file,
+          filename: file.name,
+          mediaSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          onUploadProgress: (pct) => {
+            setUploadProgressPercent(pct);
+            setMediaProcessingLabel(`Uploading ${file.name} (${pct}%)...`);
           }
-        );
-        setIsProcessingMedia(false);
-        setMediaProcessingLabel('');
-      };
-      reader.onerror = () => {
-        setIsProcessingMedia(false);
-        setMediaProcessingLabel('');
-        alert('Could not read document file.');
-      };
-      reader.readAsDataURL(file);
-    } catch (err) {
-      setIsProcessingMedia(false);
-      setMediaProcessingLabel('');
+        }
+      );
+    } catch (err: any) {
       console.error('Failed to attach document:', err);
+      setMediaError(err?.message || 'Could not upload document file.');
     } finally {
+      setIsProcessingMedia(false);
+      setUploadProgressPercent(null);
+      setMediaProcessingLabel('');
       if (documentInputRef.current) documentInputRef.current.value = '';
     }
   };
@@ -405,6 +419,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
           processAndSetImageFile(file);
           break;
         }
+      } else if (items[i].type.indexOf('video') === 0) {
+        const file = items[i].getAsFile();
+        if (file) {
+          e.preventDefault();
+          processAndSetVideoFile(file);
+          break;
+        }
       }
     }
   };
@@ -431,21 +452,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
       const file = files[0];
       if (file.type.startsWith('image/')) {
         processAndSetImageFile(file);
-      } else if (file.type.startsWith('video/')) {
+      } else if (isSupportedVideoFile(file, file.name)) {
         processAndSetVideoFile(file);
+      } else {
+        processAndSendDocumentFile(file);
       }
     }
   };
 
-  // Send Text / Image / Video Message
+  // Send Text / Image / Video Message (videos up to 55MB streamed in chunks with live progress)
   const handleSendMessage = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (isBlocked) {
-      alert('You have blocked this user. Please unblock them before sending messages.');
+      setMediaError('You have blocked this user. Please unblock them before sending messages.');
       return;
     }
     if ((!inputText.trim() && !selectedImage && !selectedVideo) || !userProfile || !chat.id || isProcessingMedia) return;
 
+    setMediaError(null);
     const textToSend = inputText.trim();
     const imgToSend = selectedImage;
     const vidToSend = selectedVideo;
@@ -461,38 +485,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
       if (imgToSend) {
         await sendMessage(chat.id, userProfile.uid, textToSend, 'image', imgToSend, userProfile);
       } else if (vidToSend) {
-        await sendMessage(
-          chat.id, 
-          userProfile.uid, 
-          textToSend, 
-          'video', 
-          vidToSend.dataUrl, 
-          userProfile,
-          {
-            mediaThumbnail: vidToSend.thumbnailUrl,
-            mediaDuration: vidToSend.duration,
-            mediaSize: vidToSend.size
-          }
-        );
+        setIsProcessingMedia(true);
+        setUploadProgressPercent(0);
+        setMediaProcessingLabel('Uploading video (0%)...');
+        try {
+          await sendMessage(
+            chat.id,
+            userProfile.uid,
+            textToSend,
+            'video',
+            vidToSend.dataUrl,
+            userProfile,
+            {
+              mediaBlob: vidToSend.file,
+              mediaThumbnail: vidToSend.thumbnailUrl,
+              mediaDuration: vidToSend.duration,
+              mediaSize: vidToSend.size,
+              filename: vidToSend.filename,
+              fileType: vidToSend.mimeType,
+              onUploadProgress: (pct) => {
+                setUploadProgressPercent(pct);
+                setMediaProcessingLabel(`Uploading video (${pct}%)...`);
+              }
+            }
+          );
+        } finally {
+          setIsProcessingMedia(false);
+          setUploadProgressPercent(null);
+          setMediaProcessingLabel('');
+        }
       } else {
         await sendMessage(chat.id, userProfile.uid, textToSend, 'text', undefined, userProfile);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error sending message:', err);
-      alert('Failed to send message. Please check your connection and try again.');
+      setMediaError(err?.message || 'Failed to send message. Please check your connection and try again.');
     }
   };
 
   // Audio Voice Note Recording with Permissions
   const startRecording = async () => {
     if (isBlocked) {
-      alert('You have blocked this user. Unblock them first to send voice notes.');
+      setMediaError('You have blocked this user. Unblock them first to send voice notes.');
       return;
     }
 
     const perm = await requestMicrophonePermission();
     if (!perm.granted) {
-      alert(perm.error || 'Microphone access is required to send voice notes.');
+      setMediaError(perm.error || 'Microphone access is required to send voice notes.');
       return;
     }
 
@@ -523,7 +563,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         setRecordingTime(prev => prev + 1);
       }, 1000);
     } catch (err) {
-      alert('Microphone access is required to record voice notes.');
+      setMediaError('Microphone access is required to record voice notes.');
     }
   };
 
@@ -1032,13 +1072,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     )}
 
-                    {/* Video Attachment */}
+                    {/* Video Attachment (supports up to 55MB) */}
                     {msg.type === 'video' && msg.mediaUrl && (
                       <div className="my-1">
                         <VideoPlayerMessage
                           mediaUrl={msg.mediaUrl}
                           thumbnailUrl={msg.mediaThumbnail}
                           duration={msg.mediaDuration}
+                          mediaSize={msg.mediaSize || msg.fileSize}
+                          filename={msg.filename}
                           onOpenFullscreen={(url) => setPreviewVideo(url)}
                         />
                       </div>
@@ -1074,28 +1116,56 @@ export const ChatView: React.FC<ChatViewProps> = ({
                               <p className="font-semibold text-xs truncate" title={msg.filename || 'Document'}>
                                 {msg.filename || 'Document'}
                               </p>
-                              {msg.fileSize && (
+                              {(msg.fileSize || msg.mediaSize) && (
                                 <p className={`text-[10px] ${isMe ? 'text-blue-100' : 'text-slate-400'}`}>
-                                  {msg.fileSize > 1024 * 1024 
-                                    ? `${(msg.fileSize / (1024 * 1024)).toFixed(1)} MB` 
-                                    : `${Math.round(msg.fileSize / 1024)} KB`}
+                                  {(msg.fileSize || msg.mediaSize || 0) > 1024 * 1024 
+                                    ? `${((msg.fileSize || msg.mediaSize || 0) / (1024 * 1024)).toFixed(1)} MB` 
+                                    : `${Math.max(1, Math.round((msg.fileSize || msg.mediaSize || 0) / 1024))} KB`}
                                 </p>
                               )}
                             </div>
                           </div>
-                          <a
-                            href={msg.mediaUrl}
-                            download={msg.filename || `document-${Date.now()}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className={`p-2 rounded-xl shrink-0 transition-colors cursor-pointer ${
-                              isMe 
-                                ? 'bg-white/20 hover:bg-white/30 text-white' 
-                                : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
-                            }`}
-                            title="Download document"
-                          >
-                            <Download className="w-4 h-4" />
-                          </a>
+                          {isChunkedMediaUrl(msg.mediaUrl) ? (
+                            <button
+                              type="button"
+                              disabled={downloadingDocId === msg.id}
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                setDownloadingDocId(msg.id);
+                                try {
+                                  await downloadVideoDataUrl(msg.mediaUrl!, msg.filename || `document-${Date.now()}`);
+                                } finally {
+                                  setDownloadingDocId(null);
+                                }
+                              }}
+                              className={`p-2 rounded-xl shrink-0 transition-colors cursor-pointer disabled:opacity-60 ${
+                                isMe 
+                                  ? 'bg-white/20 hover:bg-white/30 text-white' 
+                                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
+                              }`}
+                              title="Download document"
+                            >
+                              {downloadingDocId === msg.id ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : (
+                                <Download className="w-4 h-4" />
+                              )}
+                            </button>
+                          ) : (
+                            <a
+                              href={msg.mediaUrl}
+                              download={msg.filename || `document-${Date.now()}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className={`p-2 rounded-xl shrink-0 transition-colors cursor-pointer ${
+                                isMe 
+                                  ? 'bg-white/20 hover:bg-white/30 text-white' 
+                                  : 'bg-blue-600 hover:bg-blue-700 text-white shadow-xs'
+                              }`}
+                              title="Download document"
+                            >
+                              <Download className="w-4 h-4" />
+                            </a>
+                          )}
                         </div>
                       </div>
                     )}
@@ -1342,49 +1412,84 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Selected Media Preview (Image or Video) before sending */}
-      {(selectedImage || selectedVideo || isProcessingMedia) && (
-        <div className="p-3 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-2 duration-150">
-          <div className="flex items-center gap-3 min-w-0">
-            {isProcessingMedia ? (
-              <div className="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-950/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
-                <Loader2 className="w-6 h-6 animate-spin" />
-              </div>
-            ) : selectedImage ? (
-              <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover ring-2 ring-blue-500/30 shrink-0" />
-            ) : selectedVideo ? (
-              <div className="w-12 h-12 rounded-xl bg-black relative flex items-center justify-center overflow-hidden shrink-0 ring-2 ring-blue-500/30">
-                {selectedVideo.thumbnailUrl ? (
-                  <img src={selectedVideo.thumbnailUrl} alt="Video poster" className="w-full h-full object-cover" />
-                ) : (
-                  <VideoIcon className="w-6 h-6 text-white" />
-                )}
-                <div className="absolute inset-0 flex items-center justify-center bg-black/30">
-                  <Play className="w-3.5 h-3.5 fill-white text-white" />
-                </div>
-              </div>
-            ) : null}
+      {/* Inline Media Error Banner (no blocking browser alert) */}
+      {mediaError && (
+        <div className="px-3.5 py-2.5 bg-rose-50 dark:bg-rose-950/60 border-t border-rose-200 dark:border-rose-900/60 flex items-center justify-between gap-2 text-xs text-rose-700 dark:text-rose-300 animate-in fade-in duration-150 shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+            <span className="truncate font-medium">{mediaError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setMediaError(null)}
+            className="p-1 rounded-lg hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-500 shrink-0 cursor-pointer"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
-            <div className="min-w-0">
-              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block truncate">
-                {isProcessingMedia ? mediaProcessingLabel : selectedImage ? 'Photo Attached' : 'Video Attached'}
-              </span>
-              <span className="text-[10px] text-slate-500 dark:text-slate-400 block truncate">
-                {isProcessingMedia ? 'Processing media for fast delivery' : 'Add optional text caption below and tap Send'}
-              </span>
+      {/* Selected Media Preview (Image or Video up to 55MB) before sending */}
+      {(selectedImage || selectedVideo || isProcessingMedia) && (
+        <div className="p-3 bg-slate-100 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 flex flex-col gap-2 animate-in fade-in slide-in-from-bottom-2 duration-150 shrink-0">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              {isProcessingMedia ? (
+                <div className="w-12 h-12 rounded-xl bg-blue-100 dark:bg-blue-950/60 flex items-center justify-center text-blue-600 dark:text-blue-400 shrink-0">
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                </div>
+              ) : selectedImage ? (
+                <img src={selectedImage} alt="Selected attachment" className="w-12 h-12 rounded-xl object-cover ring-2 ring-blue-500/30 shrink-0" />
+              ) : selectedVideo ? (
+                <div className="w-12 h-12 rounded-xl bg-black relative flex items-center justify-center overflow-hidden shrink-0 ring-2 ring-blue-500/30">
+                  {selectedVideo.thumbnailUrl ? (
+                    <img src={selectedVideo.thumbnailUrl} alt="Video poster" className="w-full h-full object-cover" />
+                  ) : (
+                    <VideoIcon className="w-6 h-6 text-white" />
+                  )}
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/30">
+                    <Play className="w-3.5 h-3.5 fill-white text-white" />
+                  </div>
+                </div>
+              ) : null}
+
+              <div className="min-w-0">
+                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block truncate">
+                  {isProcessingMedia
+                    ? mediaProcessingLabel
+                    : selectedImage
+                      ? 'Photo Attached'
+                      : `Video Attached (${((selectedVideo?.size || 0) / (1024 * 1024)).toFixed(1)} MB)`}
+                </span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block truncate">
+                  {isProcessingMedia
+                    ? 'Streaming media chunks securely'
+                    : 'Add optional text caption below and tap Send (up to 55MB)'}
+                </span>
+              </div>
             </div>
+
+            {!isProcessingMedia && (
+              <button
+                type="button"
+                onClick={() => { setSelectedImage(null); setSelectedVideo(null); }}
+                className="px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 rounded-xl text-xs font-semibold transition-colors shrink-0 flex items-center gap-1 cursor-pointer min-h-[36px]"
+                title="Cancel attachment"
+              >
+                <X className="w-3.5 h-3.5" />
+                <span>Cancel</span>
+              </button>
+            )}
           </div>
 
-          {!isProcessingMedia && (
-            <button
-              type="button"
-              onClick={() => { setSelectedImage(null); setSelectedVideo(null); }}
-              className="px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 rounded-xl text-xs font-semibold transition-colors shrink-0 flex items-center gap-1 cursor-pointer min-h-[36px]"
-              title="Cancel attachment"
-            >
-              <X className="w-3.5 h-3.5" />
-              <span>Cancel</span>
-            </button>
+          {isProcessingMedia && uploadProgressPercent !== null && (
+            <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-600 transition-all duration-150 rounded-full"
+                style={{ width: `${Math.max(4, uploadProgressPercent)}%` }}
+              />
+            </div>
           )}
         </div>
       )}
@@ -1513,7 +1618,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setShowAttachMenu(false);
                   const perm = await requestCameraPermission();
                   if (!perm.granted) {
-                    alert(perm.error || 'Camera permission required.');
+                    setMediaError(perm.error || 'Camera permission required.');
                     return;
                   }
                   cameraInputRef.current?.click();

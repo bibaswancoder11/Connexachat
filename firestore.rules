@@ -2,6 +2,30 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidMediaAsset(data) {
+      return data.keys().hasAll(['id', 'uploaderId', 'mimeType', 'filename', 'size', 'chunkSize', 'totalChunks', 'status', 'createdAt'])
+        && data.keys().hasOnly(['id', 'uploaderId', 'mimeType', 'filename', 'size', 'chunkSize', 'totalChunks', 'status', 'createdAt'])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.uploaderId is string && data.uploaderId.size() >= 1 && data.uploaderId.size() <= 128
+        && data.mimeType is string && data.mimeType.size() >= 1 && data.mimeType.size() <= 120
+        && data.filename is string && data.filename.size() >= 1 && data.filename.size() <= 240
+        && data.size is number && data.size > 0 && data.size <= 57671680
+        && data.chunkSize is number && data.chunkSize > 0 && data.chunkSize <= 750000
+        && data.totalChunks is number && data.totalChunks >= 1 && data.totalChunks <= 120
+        && data.status in ['uploading', 'ready'];
+    }
+
+    function isValidMediaChunk(data) {
+      return data.keys().hasAll(['index', 'data'])
+        && data.keys().hasOnly(['index', 'data'])
+        && data.index is number && data.index >= 0 && data.index < 120
+        && data.data is string && data.data.size() > 0 && data.data.size() <= 760000;
+    }
+
     // Allow user profile reads and writes so account registration, 
     // login lookups, email availability, and profile creation succeed
     match /users/{userId} {
@@ -29,6 +53,26 @@ service cloud.firestore {
 
       match /messages/{messageId} {
         allow read, write: if true;
+      }
+    }
+
+    // Chunked Media Assets (Videos & Files up to 55 MB = 57,671,680 bytes)
+    match /mediaAssets/{mediaId} {
+      allow get: if isValidId(mediaId);
+      allow create: if isValidId(mediaId)
+        && isValidMediaAsset(request.resource.data)
+        && request.resource.data.id == mediaId;
+      allow update: if isValidId(mediaId)
+        && isValidMediaAsset(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status'])
+        && resource.data.status == 'uploading'
+        && request.resource.data.status == 'ready';
+
+      match /chunks/{chunkId} {
+        allow get: if isValidId(mediaId) && isValidId(chunkId);
+        allow create, update: if isValidId(mediaId)
+          && isValidId(chunkId)
+          && isValidMediaChunk(request.resource.data);
       }
     }
 

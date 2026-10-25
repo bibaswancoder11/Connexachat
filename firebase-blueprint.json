@@ -89,13 +89,46 @@
         "senderName": { "type": "string", "description": "Sender display name" },
         "senderPhoto": { "type": "string", "description": "Sender profile picture URL" },
         "text": { "type": "string", "description": "Text message content" },
-        "mediaUrl": { "type": "string", "description": "Optional image/voice data URL" },
-        "type": { "type": "string", "description": "Message type: text, image, audio, system" },
+        "mediaUrl": { "type": "string", "description": "Media data URL or connexa-media:// chunked asset reference" },
+        "mediaThumbnail": { "type": "string", "description": "Poster thumbnail image URL for video attachments" },
+        "mediaDuration": { "type": "number", "description": "Duration in seconds for video/audio attachments" },
+        "mediaSize": { "type": "number", "description": "Byte size of attached media up to 55MB" },
+        "filename": { "type": "string", "description": "Original attachment filename" },
+        "fileSize": { "type": "number", "description": "Attachment size in bytes" },
+        "fileType": { "type": "string", "description": "Attachment MIME type" },
+        "type": { "type": "string", "description": "Message type: text, image, video, audio, file, system" },
         "reactions": { "type": "object", "description": "Reactions map { [uid]: emoji }" },
         "timestamp": { "type": "string", "description": "Message sent timestamp" },
         "readBy": { "type": "array", "description": "Array of user IDs who read the message" }
       },
       "required": ["chatId", "senderId"]
+    },
+    "mediaAssets": {
+      "title": "Chunked Media Asset",
+      "description": "Metadata manifest for chunked videos and files up to 55MB",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "description": "Unique media asset ID" },
+        "uploaderId": { "type": "string", "maxLength": 128, "description": "Uploader user UID" },
+        "mimeType": { "type": "string", "maxLength": 120, "description": "Media MIME type (e.g. video/mp4)" },
+        "filename": { "type": "string", "maxLength": 240, "description": "Original file name" },
+        "size": { "type": "number", "description": "Total file size in bytes (max 57671680 for 55MB)" },
+        "chunkSize": { "type": "number", "description": "Raw binary chunk size in bytes (540672)" },
+        "totalChunks": { "type": "number", "description": "Total number of chunk documents (1 to 112)" },
+        "status": { "type": "string", "enum": ["uploading", "ready"], "description": "Upload completion status" },
+        "createdAt": { "type": "string", "description": "Creation server timestamp" }
+      },
+      "required": ["id", "uploaderId", "mimeType", "filename", "size", "chunkSize", "totalChunks", "status"]
+    },
+    "mediaChunks": {
+      "title": "Media Binary Chunk",
+      "description": "Individual Base64-encoded binary slice (<= 720,896 chars) of a 55MB media asset",
+      "type": "object",
+      "properties": {
+        "index": { "type": "number", "description": "Zero-based chunk index" },
+        "data": { "type": "string", "maxLength": 760000, "description": "Base64-encoded binary slice" }
+      },
+      "required": ["index", "data"]
     },
     "calls": {
       "title": "Call Session",
@@ -120,6 +153,16 @@
         "durationSeconds": { "type": "number", "description": "Total call duration in seconds" }
       },
       "required": ["callerUid", "recipientUid", "status"]
+    },
+    "iceCandidate": {
+      "title": "WebRTC ICE Candidate",
+      "description": "Signaling ICE candidate document",
+      "type": "object",
+      "properties": {
+        "candidate": { "type": "string", "description": "SDP candidate string" },
+        "sdpMid": { "type": "string", "description": "SDP media stream identification" },
+        "sdpMLineIndex": { "type": "number", "description": "SDP m-line index" }
+      }
     }
   },
   "firestore": {
@@ -147,16 +190,24 @@
       "schema": { "$ref": "#/entities/messages" },
       "description": "Messages subcollection within a chat"
     },
+    "/mediaAssets/{mediaId}": {
+      "schema": { "$ref": "#/entities/mediaAssets" },
+      "description": "Chunked media manifests for videos and files up to 55MB"
+    },
+    "/mediaAssets/{mediaId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/mediaChunks" },
+      "description": "Ordered Base64 chunks for 55MB media assets"
+    },
     "/calls/{callId}": {
       "schema": { "$ref": "#/entities/calls" },
       "description": "WebRTC calls and signaling"
     },
     "/calls/{callId}/callerCandidates/{candidateId}": {
-      "schema": { "type": "object" },
+      "schema": { "$ref": "#/entities/iceCandidate" },
       "description": "WebRTC ICE candidates from caller"
     },
     "/calls/{callId}/recipientCandidates/{candidateId}": {
-      "schema": { "type": "object" },
+      "schema": { "$ref": "#/entities/iceCandidate" },
       "description": "WebRTC ICE candidates from recipient"
     }
   }

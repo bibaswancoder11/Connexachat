@@ -17,17 +17,20 @@ import {
 import { UserProfile, ChatRoom } from '../types';
 import { isUserBlockedLocally } from '../services/blockService';
 import { getOrCreateChat, sendMessage } from '../services/chatService';
+import { uploadLargeMedia, MAX_VIDEO_SIZE_BYTES, MAX_VIDEO_SIZE_MB } from '../services/mediaStorageService';
 import { EmojiPickerPopup } from './EmojiPickerPopup';
 import { getDomainFromUrl, normalizeUrl } from '../utils/urlUtils';
 
 export interface UniversalShareItem {
   type: 'image' | 'video' | 'file';
   dataUrl: string;
+  file?: File | Blob;
   filename?: string;
   size?: number;
   mimeType?: string;
   thumbnailUrl?: string;
   duration?: number;
+  error?: string;
 }
 
 export interface UniversalSharePayload {
@@ -105,7 +108,11 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showEmojiPicker, setShowEmojiPicker] = useState<boolean>(false);
   const [isSending, setIsSending] = useState<boolean>(false);
-  const [errorMessage, setErrorMessage] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string>(() => {
+    const errItem = payload.items?.find(i => i.error);
+    return errItem?.error || '';
+  });
 
   const captionInputRef = useRef<HTMLInputElement>(null);
 
@@ -117,7 +124,9 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
     } else {
       setCaption(rawCap);
     }
-    setErrorMessage('');
+    const errItem = payload.items?.find(i => i.error);
+    setErrorMessage(errItem?.error || '');
+    setUploadProgress(null);
   }, [payload]);
 
   // Support Escape key to cancel
@@ -244,16 +253,61 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
     }
   };
 
-  // Perform WhatsApp-style multi-recipient send
+  // Perform WhatsApp-style multi-recipient send (supports videos & files up to 55MB)
   const handleSend = async () => {
     if (selectedRecipientIds.length === 0 || isSending) return;
 
+    // Validate item errors or size limits before starting
+    if (payload.items && payload.items.length > 0) {
+      for (const item of payload.items) {
+        if (item.error) {
+          setErrorMessage(item.error);
+          return;
+        }
+        const itemBytes = item.file?.size ?? item.size ?? 0;
+        if (itemBytes > MAX_VIDEO_SIZE_BYTES) {
+          setErrorMessage(
+            `${item.type === 'video' ? 'Video' : 'File'} is too large (${(itemBytes / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
+          );
+          return;
+        }
+      }
+    }
+
     setIsSending(true);
+    setUploadProgress(null);
     setErrorMessage('');
 
     const dispatchedChatIds: string[] = [];
 
     try {
+      // Pre-upload media/files ONCE so sharing a 55MB video to multiple friends doesn't upload multiple times
+      let preparedItems: UniversalShareItem[] = payload.items || [];
+      if ((payload.type === 'media' || payload.type === 'file') && preparedItems.length > 0) {
+        const uploadedList: UniversalShareItem[] = [];
+        for (let idx = 0; idx < preparedItems.length; idx++) {
+          const rawItem = preparedItems[idx];
+          const resolvedUrl = await uploadLargeMedia({
+            blob: rawItem.file,
+            dataUrl: rawItem.dataUrl,
+            mimeType: rawItem.mimeType,
+            filename: rawItem.filename,
+            uploaderId: currentUser.uid,
+            onProgress: (pct) => {
+              const overall = Math.round(((idx * 100 + pct) / preparedItems.length));
+              setUploadProgress(overall);
+            }
+          });
+          uploadedList.push({
+            ...rawItem,
+            dataUrl: resolvedUrl,
+            file: undefined
+          });
+        }
+        preparedItems = uploadedList;
+        setUploadProgress(100);
+      }
+
       for (const recId of selectedRecipientIds) {
         const target = allRecipients.find(r => r.id === recId);
         if (!target) continue;
@@ -275,10 +329,10 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
             : (payload.title && !finalUrl.includes(payload.title) ? `${payload.title}\n${finalUrl}` : finalUrl);
           await sendMessage(targetChatId, currentUser.uid, finalMsg, 'text', undefined, currentUser);
         }
-        // 2. Sending Media & Mixed Items (Images, Videos, Documents)
-        else if ((payload.type === 'media' || payload.type === 'file') && payload.items && payload.items.length > 0) {
-          for (let i = 0; i < payload.items.length; i++) {
-            const item = payload.items[i];
+        // 2. Sending Media & Mixed Items (Images, Videos up to 55MB, Documents)
+        else if ((payload.type === 'media' || payload.type === 'file') && preparedItems.length > 0) {
+          for (let i = 0; i < preparedItems.length; i++) {
+            const item = preparedItems[i];
             const itemCaption = i === 0 ? caption.trim() : '';
 
             if (item.type === 'file') {
@@ -307,7 +361,8 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
                   mediaThumbnail: item.thumbnailUrl,
                   mediaDuration: item.duration,
                   mediaSize: item.size,
-                  filename: item.filename
+                  filename: item.filename,
+                  fileType: item.mimeType
                 }
               );
             }
@@ -327,6 +382,7 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
       console.error('Error dispatching shared content:', err);
       setErrorMessage(err?.message || 'Failed to send shared item. Please check your connection and try again.');
       setIsSending(false);
+      setUploadProgress(null);
     }
   };
 
@@ -679,7 +735,12 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
               title="Send"
             >
               {isSending ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
+                <div className="flex flex-col items-center justify-center">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  {uploadProgress !== null && (
+                    <span className="text-[9px] font-bold leading-none mt-0.5">{uploadProgress}%</span>
+                  )}
+                </div>
               ) : (
                 <>
                   <Send className="w-5 h-5 ml-0.5" />

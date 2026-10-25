@@ -22,6 +22,11 @@ import { ChatRoom, ChatMessage, UserProfile } from '../types';
 import { getFriendshipId, checkIsFriend } from './friendService';
 import { getUserProfile, saveLocalRegisteredAccount } from './userService';
 import { dispatchBackgroundPushNotification } from './notificationService';
+import {
+  uploadLargeMedia,
+  isChunkedMediaUrl,
+  INLINE_DATA_URL_MAX_CHARS
+} from './mediaStorageService';
 
 export const getOrCreateChat = async (uid1: string, uid2: string): Promise<string> => {
   if (!uid1 || !uid2 || uid1 === uid2) {
@@ -368,14 +373,37 @@ export const sendMessage = async (
   mediaUrl?: string,
   senderProfile?: UserProfile,
   extraMedia?: {
+    mediaBlob?: Blob | File;
     mediaThumbnail?: string;
     mediaDuration?: number;
     mediaSize?: number;
     filename?: string;
     fileType?: string;
+    onUploadProgress?: (percent: number) => void;
   }
 ): Promise<void> => {
   const messagesRef = collection(db, 'chats', chatId, 'messages');
+
+  let finalMediaUrl = mediaUrl;
+  const needsChunkedUpload =
+    Boolean(extraMedia?.mediaBlob) ||
+    Boolean(
+      finalMediaUrl &&
+        !isChunkedMediaUrl(finalMediaUrl) &&
+        (finalMediaUrl.startsWith('blob:') ||
+          (finalMediaUrl.startsWith('data:') && finalMediaUrl.length > INLINE_DATA_URL_MAX_CHARS))
+    );
+
+  if (needsChunkedUpload) {
+    finalMediaUrl = await uploadLargeMedia({
+      blob: extraMedia?.mediaBlob,
+      dataUrl: finalMediaUrl,
+      mimeType: extraMedia?.fileType || (type === 'video' ? 'video/mp4' : undefined),
+      filename: extraMedia?.filename,
+      uploaderId: senderId,
+      onProgress: extraMedia?.onUploadProgress
+    });
+  }
   
   let previewText = text;
   if (type === 'image') previewText = text.trim() ? `📷 ${text.trim()}` : '📷 Photo';
@@ -390,7 +418,7 @@ export const sendMessage = async (
     senderPhoto: senderProfile?.photoURL || '',
     text,
     type,
-    ...(mediaUrl ? { mediaUrl } : {}),
+    ...(finalMediaUrl ? { mediaUrl: finalMediaUrl } : {}),
     ...(extraMedia?.mediaThumbnail ? { mediaThumbnail: extraMedia.mediaThumbnail } : {}),
     ...(extraMedia?.mediaDuration ? { mediaDuration: extraMedia.mediaDuration } : {}),
     ...(extraMedia?.mediaSize ? { mediaSize: extraMedia.mediaSize } : {}),

@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -12,12 +13,48 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3000;
+const MAX_SHARED_BYTES = 55 * 1024 * 1024; // 55 MB
 
 app.use(compression());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+app.use(express.json({ limit: '15mb' }));
+app.use(express.urlencoded({ extended: true, limit: '60mb' }));
 
-// Fallback Web Share Target POST handler (in case a cold-launched PWA POST reaches Express before SW intercepts)
+interface TempSharedFile {
+  filePath: string;
+  mimeType: string;
+  filename: string;
+  size: number;
+  expiresAt: number;
+}
+const tempSharedFiles = new Map<string, TempSharedFile>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of tempSharedFiles.entries()) {
+    if (entry.expiresAt <= now) {
+      tempSharedFiles.delete(id);
+      fs.promises.unlink(entry.filePath).catch(() => {});
+    }
+  }
+}, 60000).unref();
+
+app.get('/api/shared-temp/:fileId', (req, res) => {
+  const { fileId } = req.params;
+  const entry = tempSharedFiles.get(fileId);
+  if (!entry || !fs.existsSync(entry.filePath)) {
+    return res.status(404).json({ error: 'Shared temporary file expired or not found.' });
+  }
+  res.setHeader('Content-Type', entry.mimeType);
+  res.setHeader('Content-Length', String(entry.size));
+  const stream = fs.createReadStream(entry.filePath);
+  stream.on('close', () => {
+    tempSharedFiles.delete(fileId);
+    fs.promises.unlink(entry.filePath).catch(() => {});
+  });
+  stream.pipe(res);
+});
+
+// Fallback Web Share Target POST handler (supports videos & files up to 55MB if cold-launched POST reaches Express before SW intercepts)
 app.post(['/', '/share-target', '/index.html'], async (req, res) => {
   try {
     const contentType = (req.headers['content-type'] || '').toLowerCase();
@@ -41,26 +78,54 @@ app.post(['/', '/share-target', '/index.html'], async (req, res) => {
       const items: Array<{
         type: 'image' | 'video' | 'file';
         dataUrl: string;
+        tempFileUrl?: string;
         filename: string;
         size: number;
         mimeType: string;
+        error?: string;
       }> = [];
 
       for (const [, val] of formData.entries()) {
         if (val && typeof val === 'object' && 'arrayBuffer' in val && typeof (val as File).size === 'number' && (val as File).size > 0) {
           const f = val as File;
-          const buf = Buffer.from(await f.arrayBuffer());
           const mime = f.type || 'application/octet-stream';
           const lowerName = (f.name || '').toLowerCase();
           let itemType: 'image' | 'video' | 'file' = 'file';
           if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg)$/.test(lowerName)) {
             itemType = 'image';
-          } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v)$/.test(lowerName)) {
+          } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v|3gp)$/.test(lowerName)) {
             itemType = 'video';
           }
+
+          if (f.size > MAX_SHARED_BYTES) {
+            items.push({
+              type: itemType,
+              dataUrl: '',
+              filename: f.name || 'shared_file',
+              size: f.size,
+              mimeType: mime,
+              error: `${itemType === 'video' ? 'Video' : 'File'} exceeds the 55MB sharing limit.`
+            });
+            continue;
+          }
+
+          const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+          const tmpPath = path.join(os.tmpdir(), `connexa_${tempId}`);
+          const buf = Buffer.from(await f.arrayBuffer());
+          await fs.promises.writeFile(tmpPath, buf);
+
+          tempSharedFiles.set(tempId, {
+            filePath: tmpPath,
+            mimeType: mime,
+            filename: f.name || 'shared_file',
+            size: f.size,
+            expiresAt: Date.now() + 5 * 60 * 1000
+          });
+
           items.push({
             type: itemType,
-            dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+            dataUrl: '',
+            tempFileUrl: `/api/shared-temp/${tempId}`,
             filename: f.name || 'shared_file',
             size: f.size,
             mimeType: mime
