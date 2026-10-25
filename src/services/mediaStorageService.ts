@@ -120,9 +120,114 @@ function openMediaCacheDb(): Promise<IDBDatabase> {
   });
 }
 
+export interface PreparedMediaSource {
+  size: number;
+  mimeType: string;
+  filename: string;
+  /** Pre-read 528 KB Uint8Array chunks in standard heap (immune to Android content:// expiration & Chromium ~48MB BlobRegistry cap) */
+  chunks?: Uint8Array[];
+  /** Native Android temp file ID in getCacheDir()/connexa_shared_cache — streamed chunk-by-chunk directly over JNI */
+  nativeFileId?: string;
+}
+
+/**
+ * Releases any native temporary file or in-memory buffers held by a PreparedMediaSource
+ */
+export function releasePreparedMediaSource(source?: PreparedMediaSource | null): void {
+  if (!source) return;
+  if (source.nativeFileId && typeof window !== 'undefined') {
+    try {
+      const bridge = (window as any).ConnexaAndroidShare;
+      if (bridge && typeof bridge.deleteSharedTempFile === 'function') {
+        bridge.deleteSharedTempFile(source.nativeFileId);
+      }
+    } catch {
+      // ignore
+    }
+    source.nativeFileId = undefined;
+  }
+}
+
+function sanitizeOpfsKey(mediaId: string): string {
+  return mediaId.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
+}
+
+async function writeChunksToOpfsBlob(
+  mediaId: string,
+  chunks: Uint8Array[],
+  mimeType: string
+): Promise<{ blob: Blob; opfsKey: string } | null> {
+  try {
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.storage ||
+      typeof navigator.storage.getDirectory !== 'function'
+    ) {
+      return null;
+    }
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle('connexa_media_blobs', { create: true });
+    const opfsKey = sanitizeOpfsKey(mediaId);
+    const fileHandle = await dir.getFileHandle(opfsKey, { create: true });
+    if (typeof (fileHandle as any).createWritable !== 'function') {
+      return null;
+    }
+    const writable = await (fileHandle as any).createWritable();
+    let expectedBytes = 0;
+    for (const chunk of chunks) {
+      if (chunk && chunk.byteLength > 0) {
+        await writable.write(chunk);
+        expectedBytes += chunk.byteLength;
+      }
+    }
+    await writable.close();
+    const diskFile = await fileHandle.getFile();
+    if (diskFile.size !== expectedBytes || expectedBytes === 0) {
+      return null;
+    }
+    return {
+      blob: diskFile.slice(0, diskFile.size, mimeType),
+      opfsKey
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function readOpfsBlobByKey(opfsKey: string, mimeType: string): Promise<Blob | null> {
+  try {
+    if (
+      typeof navigator === 'undefined' ||
+      !navigator.storage ||
+      typeof navigator.storage.getDirectory !== 'function'
+    ) {
+      return null;
+    }
+    const root = await navigator.storage.getDirectory();
+    const dir = await root.getDirectoryHandle('connexa_media_blobs', { create: false });
+    const fileHandle = await dir.getFileHandle(opfsKey, { create: false });
+    const diskFile = await fileHandle.getFile();
+    if (!diskFile || diskFile.size <= 0) return null;
+    return diskFile.slice(0, diskFile.size, mimeType);
+  } catch {
+    return null;
+  }
+}
+
+async function isBlobReadable(blob: Blob): Promise<boolean> {
+  if (blob.size === 0) return false;
+  try {
+    const probe = blob.slice(0, Math.min(16, blob.size));
+    const buf = await probe.arrayBuffer();
+    return buf.byteLength > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function cacheMediaBlobLocally(
   mediaId: string,
-  blob: Blob,
+  blobOrChunks: Blob | Uint8Array[],
   mimeType?: string,
   filename?: string
 ): Promise<string> {
@@ -131,34 +236,97 @@ export async function cacheMediaBlobLocally(
     return existing.objectUrl;
   }
 
-  const resolvedMime = mimeType || blob.type || 'video/mp4';
-  const typedBlob = blob.type === resolvedMime ? blob : new Blob([blob], { type: resolvedMime });
-  const objectUrl = URL.createObjectURL(typedBlob);
+  const resolvedMime =
+    mimeType ||
+    (!Array.isArray(blobOrChunks) && blobOrChunks.type ? blobOrChunks.type : '') ||
+    'video/mp4';
 
-  memoryObjectUrlCache.set(mediaId, {
-    objectUrl,
-    blob: typedBlob,
-    mimeType: resolvedMime,
-    filename
-  });
+  let typedBlob: Blob | null = null;
+  let opfsKey: string | undefined;
 
   try {
-    const database = await openMediaCacheDb();
-    await new Promise<void>((resolve) => {
-      const tx = database.transaction(MEDIA_CACHE_STORE, 'readwrite');
-      const store = tx.objectStore(MEDIA_CACHE_STORE);
-      store.put({
-        mediaId,
-        blob: typedBlob,
-        mimeType: resolvedMime,
-        filename: filename || '',
-        cachedAt: Date.now()
-      });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
+    if (Array.isArray(blobOrChunks)) {
+      const totalBytes = blobOrChunks.reduce((sum, c) => sum + c.byteLength, 0);
+      // For >20 MB videos/files, prefer OPFS disk-backed File so Chromium's RAM BlobRegistry (~45-48 MB limit on Android) is never exhausted
+      if (totalBytes > 20 * 1024 * 1024) {
+        const opfsRes = await writeChunksToOpfsBlob(mediaId, blobOrChunks, resolvedMime);
+        if (opfsRes) {
+          typedBlob = opfsRes.blob;
+          opfsKey = opfsRes.opfsKey;
+        }
+      }
+      if (!typedBlob) {
+        typedBlob = new Blob(blobOrChunks as BlobPart[], { type: resolvedMime });
+      }
+    } else {
+      typedBlob =
+        blobOrChunks.type === resolvedMime
+          ? blobOrChunks
+          : new Blob([blobOrChunks], { type: resolvedMime });
+    }
+  } catch {
+    return '';
+  }
+
+  if (!typedBlob || !(await isBlobReadable(typedBlob))) {
+    return '';
+  }
+
+  let objectUrl = '';
+  try {
+    objectUrl = URL.createObjectURL(typedBlob);
+    memoryObjectUrlCache.set(mediaId, {
+      objectUrl,
+      blob: typedBlob,
+      mimeType: resolvedMime,
+      filename
     });
   } catch {
-    // Non-fatal if IndexedDB quota is tight; in-memory objectUrl still works
+    return '';
+  }
+
+  // Persist <= 20 MB Blobs directly in IndexedDB, or store lightweight OPFS pointer metadata for > 20 MB files
+  if (typedBlob.size <= 20 * 1024 * 1024 || opfsKey) {
+    try {
+      const database = await openMediaCacheDb();
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        try {
+          const tx = database.transaction(MEDIA_CACHE_STORE, 'readwrite');
+          const store = tx.objectStore(MEDIA_CACHE_STORE);
+          store.put(
+            opfsKey
+              ? {
+                  mediaId,
+                  opfsKey,
+                  mimeType: resolvedMime,
+                  filename: filename || '',
+                  cachedAt: Date.now()
+                }
+              : {
+                  mediaId,
+                  blob: typedBlob,
+                  mimeType: resolvedMime,
+                  filename: filename || '',
+                  cachedAt: Date.now()
+                }
+          );
+          tx.oncomplete = done;
+          tx.onerror = done;
+          tx.onabort = done;
+        } catch {
+          done();
+        }
+      });
+    } catch {
+      // Non-fatal if IndexedDB quota is tight; in-memory objectUrl still works
+    }
   }
 
   return objectUrl;
@@ -186,19 +354,29 @@ export async function getCachedMediaEntry(
       const req = tx.objectStore(MEDIA_CACHE_STORE).get(mediaId);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => resolve(null);
+      tx.onabort = () => resolve(null);
     });
 
-    if (record && record.blob instanceof Blob) {
-      const mimeType = record.mimeType || record.blob.type || 'video/mp4';
-      const objectUrl = URL.createObjectURL(record.blob);
-      const entry = {
-        objectUrl,
-        blob: record.blob as Blob,
-        mimeType,
-        filename: record.filename || undefined
-      };
-      memoryObjectUrlCache.set(mediaId, entry);
-      return entry;
+    if (record) {
+      const mimeType = record.mimeType || 'video/mp4';
+      let cachedBlob: Blob | null = null;
+      if (record.opfsKey && typeof record.opfsKey === 'string') {
+        cachedBlob = await readOpfsBlobByKey(record.opfsKey, mimeType);
+      } else if (record.blob instanceof Blob) {
+        cachedBlob = record.blob;
+      }
+
+      if (cachedBlob && (await isBlobReadable(cachedBlob))) {
+        const objectUrl = URL.createObjectURL(cachedBlob);
+        const entry = {
+          objectUrl,
+          blob: cachedBlob,
+          mimeType,
+          filename: record.filename || undefined
+        };
+        memoryObjectUrlCache.set(mediaId, entry);
+        return entry;
+      }
     }
   } catch {
     // ignore
@@ -208,10 +386,10 @@ export async function getCachedMediaEntry(
 }
 
 /**
- * Convert an ArrayBuffer (up to ~540 KB) to Base64 without call stack overflow or huge intermediate strings
+ * Convert an ArrayBuffer or Uint8Array (up to ~540 KB) to Base64 without call stack overflow or huge intermediate strings
  */
-export function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
+export function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   const step = 0x8000; // 32 KB chunks for String.fromCharCode
   const parts: string[] = [];
   for (let i = 0; i < bytes.length; i += step) {
@@ -235,10 +413,201 @@ export function base64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
+function readSliceViaFileReader(slice: Blob): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (reader.result instanceof ArrayBuffer) {
+        resolve(reader.result);
+      } else {
+        reject(new Error('FileReader did not return an ArrayBuffer.'));
+      }
+    };
+    reader.onerror = () => reject(reader.error || new Error('FileReader failed to read slice.'));
+    reader.onabort = () => reject(new Error('FileReader slice read aborted.'));
+    reader.readAsArrayBuffer(slice);
+  });
+}
+
 /**
- * Convert a data: URL to a Blob without fetching if large
+ * Reads any ReadableStream<Uint8Array> sequentially into exact CHUNK_RAW_BYTES (528 KB) Uint8Array chunks
+ * without ever allocating a contiguous 50 MB buffer or registering a 50 MB Blob in Chromium's BlobRegistry.
  */
-export async function dataUrlToBlob(dataUrl: string): Promise<{ blob: Blob; mimeType: string }> {
+export async function readReadableStreamIntoChunks(
+  stream: ReadableStream<Uint8Array>,
+  expectedSize?: number,
+  onReadProgress?: (percent: number) => void
+): Promise<{ chunks: Uint8Array[]; totalBytes: number }> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let currentBuf = new Uint8Array(CHUNK_RAW_BYTES);
+  let currentOffset = 0;
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      let srcOffset = 0;
+      while (srcOffset < value.byteLength) {
+        const spaceLeft = CHUNK_RAW_BYTES - currentOffset;
+        const toCopy = Math.min(spaceLeft, value.byteLength - srcOffset);
+        currentBuf.set(value.subarray(srcOffset, srcOffset + toCopy), currentOffset);
+        currentOffset += toCopy;
+        srcOffset += toCopy;
+        totalBytes += toCopy;
+
+        if (totalBytes > MAX_VIDEO_SIZE_BYTES) {
+          throw new Error(
+            `File is too large (${(totalBytes / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
+          );
+        }
+
+        if (currentOffset === CHUNK_RAW_BYTES) {
+          chunks.push(currentBuf);
+          currentBuf = new Uint8Array(CHUNK_RAW_BYTES);
+          currentOffset = 0;
+        }
+      }
+
+      if (expectedSize && expectedSize > 0 && onReadProgress) {
+        onReadProgress(Math.min(99, Math.round((totalBytes / expectedSize) * 100)));
+      }
+    }
+
+    if (currentOffset > 0) {
+      chunks.push(currentBuf.slice(0, currentOffset));
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore
+    }
+  }
+
+  return { chunks, totalBytes };
+}
+
+/**
+ * 3-tier resilient reader that converts a File/Blob (including 49-55 MB Android content:// URIs,
+ * Photo Picker handles, and cloud-backed streams) into 528 KB Uint8Array chunks immediately while
+ * the OS file descriptor is fresh.
+ */
+export async function readBlobIntoChunks(
+  blob: Blob | File,
+  onReadProgress?: (percent: number) => void
+): Promise<Uint8Array[]> {
+  if (blob.size > MAX_VIDEO_SIZE_BYTES) {
+    throw new Error(
+      `File is too large (${(blob.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
+    );
+  }
+
+  // Tier 1: Sequential ReadableStream (works with non-seekable Android content:// pipes & avoids Blob.slice issues)
+  if (typeof blob.stream === 'function') {
+    try {
+      const { chunks, totalBytes } = await readReadableStreamIntoChunks(
+        blob.stream(),
+        blob.size,
+        onReadProgress
+      );
+      if (totalBytes > 0 && chunks.length > 0) {
+        onReadProgress?.(100);
+        return chunks;
+      }
+    } catch (streamErr: any) {
+      if (streamErr?.message?.includes('Maximum supported size')) {
+        throw streamErr;
+      }
+      console.warn('Stream chunk read fallback triggered:', streamErr);
+    }
+  }
+
+  // Tier 2: Sequential 528 KB slice reader using FileReader + slice.arrayBuffer() fallback
+  try {
+    const totalChunks = Math.ceil(blob.size / CHUNK_RAW_BYTES);
+    const chunks: Uint8Array[] = [];
+    for (let idx = 0; idx < totalChunks; idx++) {
+      const start = idx * CHUNK_RAW_BYTES;
+      const end = Math.min(start + CHUNK_RAW_BYTES, blob.size);
+      const slice = blob.slice(start, end);
+
+      let buf: ArrayBuffer;
+      try {
+        buf = await readSliceViaFileReader(slice);
+      } catch {
+        buf = await slice.arrayBuffer();
+      }
+      chunks.push(new Uint8Array(buf));
+      onReadProgress?.(Math.min(99, Math.round(((idx + 1) / totalChunks) * 100)));
+    }
+    if (chunks.length > 0) {
+      onReadProgress?.(100);
+      return chunks;
+    }
+  } catch (sliceErr) {
+    console.warn('Slice FileReader fallback triggered:', sliceErr);
+  }
+
+  // Tier 3: Response(blob).arrayBuffer() full sequential read partitioned into 528 KB chunks
+  try {
+    const fullBuffer = await new Response(blob).arrayBuffer();
+    if (fullBuffer.byteLength > 0) {
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < fullBuffer.byteLength; offset += CHUNK_RAW_BYTES) {
+        const end = Math.min(offset + CHUNK_RAW_BYTES, fullBuffer.byteLength);
+        chunks.push(new Uint8Array(fullBuffer.slice(offset, end)));
+      }
+      onReadProgress?.(100);
+      return chunks;
+    }
+  } catch (respErr) {
+    console.warn('Response(blob) fallback failed:', respErr);
+  }
+
+  throw new Error(
+    'Unable to read the selected file because Android/browser revoked temporary access. Please select the video from your device storage and send again.'
+  );
+}
+
+/**
+ * Snapshots a File/Blob immediately upon selection/share into 528 KB Uint8Array chunks so
+ * subsequent <input> resets, thumbnail generation, or delays in UniversalShareModal never cause NotReadableError.
+ */
+export async function prepareFileForUpload(
+  file: File | Blob,
+  filename?: string,
+  mimeType?: string,
+  onReadProgress?: (percent: number) => void
+): Promise<PreparedMediaSource> {
+  if (file.size > MAX_VIDEO_SIZE_BYTES) {
+    throw new Error(
+      `File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
+    );
+  }
+
+  const chunks = await readBlobIntoChunks(file, onReadProgress);
+  const actualBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  const resolvedName =
+    filename || (file instanceof File && file.name ? file.name : 'video.mp4');
+  const resolvedMime =
+    mimeType || file.type || (resolvedName.toLowerCase().endsWith('.mp4') ? 'video/mp4' : 'application/octet-stream');
+
+  return {
+    size: actualBytes || file.size,
+    mimeType: resolvedMime,
+    filename: resolvedName,
+    chunks
+  };
+}
+
+/**
+ * Convert a data: URL to 528 KB Uint8Array chunks without registering a huge Blob
+ */
+export async function dataUrlToChunks(dataUrl: string): Promise<{ chunks: Uint8Array[]; size: number; mimeType: string }> {
   const commaIdx = dataUrl.indexOf(',');
   if (commaIdx === -1) {
     throw new Error('Invalid media data URL.');
@@ -251,36 +620,56 @@ export async function dataUrlToBlob(dataUrl: string): Promise<{ blob: Blob; mime
   if (!isBase64) {
     const resp = await fetch(dataUrl);
     const b = await resp.blob();
-    return { blob: b, mimeType: b.type || mimeType };
+    const chunks = await readBlobIntoChunks(b);
+    const size = chunks.reduce((s, c) => s + c.byteLength, 0);
+    return { chunks, size, mimeType: b.type || mimeType };
   }
 
   const rawB64 = dataUrl.slice(commaIdx + 1);
-  // Decode in multiples of 4 chars (~720 KB slices) so even a 75 MB dataUrl doesn't spike memory
-  const sliceChars = 720896; // divisible by 4
-  const parts: BlobPart[] = [];
+  // 720,896 Base64 chars === 540,672 raw bytes (CHUNK_RAW_BYTES)
+  const sliceChars = 720896;
+  const chunks: Uint8Array[] = [];
+  let size = 0;
   for (let offset = 0; offset < rawB64.length; offset += sliceChars) {
     const partB64 = rawB64.slice(offset, offset + sliceChars);
-    parts.push(base64ToUint8Array(partB64));
+    const arr = base64ToUint8Array(partB64);
+    chunks.push(arr);
+    size += arr.byteLength;
   }
-  return { blob: new Blob(parts, { type: mimeType }), mimeType };
+  return { chunks, size, mimeType };
+}
+
+export async function dataUrlToBlob(dataUrl: string): Promise<{ blob: Blob; mimeType: string }> {
+  const { chunks, mimeType } = await dataUrlToChunks(dataUrl);
+  return { blob: new Blob(chunks as BlobPart[], { type: mimeType }), mimeType };
 }
 
 async function blobToInlineDataUrl(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        resolve(reader.result);
-      } else {
-        reject(new Error('Could not encode small media clip.'));
-      }
-    };
-    reader.onerror = () => reject(new Error('Error reading media clip.'));
-    reader.readAsDataURL(blob);
-  });
+  const chunks = await readBlobIntoChunks(blob);
+  const totalLen = chunks.reduce((s, c) => s + c.byteLength, 0);
+  const merged = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const c of chunks) {
+    merged.set(c, pos);
+    pos += c.byteLength;
+  }
+  const mime = blob.type || 'application/octet-stream';
+  return `data:${mime};base64,${arrayBufferToBase64(merged)}`;
+}
+
+function chunksToInlineDataUrl(chunks: Uint8Array[], mimeType: string): string {
+  const totalLen = chunks.reduce((s, c) => s + c.byteLength, 0);
+  const merged = new Uint8Array(totalLen);
+  let pos = 0;
+  for (const c of chunks) {
+    merged.set(c, pos);
+    pos += c.byteLength;
+  }
+  return `data:${mimeType || 'application/octet-stream'};base64,${arrayBufferToBase64(merged)}`;
 }
 
 export interface UploadLargeMediaOptions {
+  preparedSource?: PreparedMediaSource;
   blob?: Blob | File;
   dataUrl?: string;
   mimeType?: string;
@@ -291,7 +680,8 @@ export interface UploadLargeMediaOptions {
 
 /**
  * Uploads videos or large files (up to 55 MB) into Firestore chunked media storage.
- * Small payloads (<= 480 KB) are returned as inline data URLs for instant rendering.
+ * Supports streaming directly from Native Android Share cache (nativeFileId) or pre-read Uint8Array[] chunks
+ * with zero NotReadableError failures on 49-55 MB videos.
  */
 export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promise<string> {
   const { uploaderId, onProgress } = options;
@@ -301,57 +691,85 @@ export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promis
     return options.dataUrl;
   }
 
-  let sourceBlob: Blob | null = options.blob || null;
-  let resolvedMime = options.mimeType || sourceBlob?.type || '';
+  const nativeBridge =
+    typeof window !== 'undefined' ? (window as any).ConnexaAndroidShare : undefined;
+  const nativeFileId = options.preparedSource?.nativeFileId;
+  const canStreamNativeFile = Boolean(
+    nativeFileId &&
+      nativeBridge &&
+      typeof nativeBridge.getSharedFileChunkBase64 === 'function'
+  );
 
-  if (!sourceBlob && options.dataUrl) {
-    if (options.dataUrl.startsWith('data:') && options.dataUrl.length <= INLINE_DATA_URL_MAX_CHARS) {
-      onProgress?.(100);
-      return options.dataUrl;
-    }
-    if (options.dataUrl.startsWith('blob:')) {
-      const resp = await fetch(options.dataUrl);
-      sourceBlob = await resp.blob();
-      resolvedMime = resolvedMime || sourceBlob.type || 'video/mp4';
-    } else if (options.dataUrl.startsWith('data:')) {
-      const converted = await dataUrlToBlob(options.dataUrl);
-      sourceBlob = converted.blob;
-      resolvedMime = resolvedMime || converted.mimeType;
-    } else {
-      // External https:// URL
-      onProgress?.(100);
-      return options.dataUrl;
+  let preReadChunks: Uint8Array[] | null = options.preparedSource?.chunks || null;
+  let totalBytes = options.preparedSource?.size || 0;
+  let resolvedMime =
+    options.mimeType ||
+    options.preparedSource?.mimeType ||
+    options.blob?.type ||
+    '';
+
+  if (!canStreamNativeFile && !preReadChunks) {
+    if (options.blob) {
+      preReadChunks = await readBlobIntoChunks(options.blob);
+      totalBytes = preReadChunks.reduce((sum, c) => sum + c.byteLength, 0);
+      resolvedMime = resolvedMime || options.blob.type || '';
+    } else if (options.dataUrl) {
+      if (options.dataUrl.startsWith('data:') && options.dataUrl.length <= INLINE_DATA_URL_MAX_CHARS) {
+        onProgress?.(100);
+        return options.dataUrl;
+      }
+      if (options.dataUrl.startsWith('blob:')) {
+        const resp = await fetch(options.dataUrl);
+        const fetchedBlob = await resp.blob();
+        preReadChunks = await readBlobIntoChunks(fetchedBlob);
+        totalBytes = preReadChunks.reduce((sum, c) => sum + c.byteLength, 0);
+        resolvedMime = resolvedMime || fetchedBlob.type || 'video/mp4';
+      } else if (options.dataUrl.startsWith('data:')) {
+        const converted = await dataUrlToChunks(options.dataUrl);
+        preReadChunks = converted.chunks;
+        totalBytes = converted.size;
+        resolvedMime = resolvedMime || converted.mimeType;
+      } else {
+        // External https:// URL
+        onProgress?.(100);
+        return options.dataUrl;
+      }
     }
   }
 
-  if (!sourceBlob) {
+  if (!canStreamNativeFile && (!preReadChunks || preReadChunks.length === 0 || totalBytes <= 0)) {
     throw new Error('No media data provided for upload.');
   }
 
-  if (sourceBlob.size > MAX_VIDEO_SIZE_BYTES) {
+  if (totalBytes > MAX_VIDEO_SIZE_BYTES) {
     throw new Error(
-      `File is too large (${(sourceBlob.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
+      `File is too large (${(totalBytes / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
     );
   }
 
+  const finalMime = (resolvedMime || 'video/mp4').slice(0, 120);
+
   // Keep tiny files inline so small images/voice notes render with zero extra roundtrips
-  if (sourceBlob.size <= INLINE_BINARY_THRESHOLD_BYTES) {
+  if (!canStreamNativeFile && preReadChunks && totalBytes <= INLINE_BINARY_THRESHOLD_BYTES) {
     const inlineUrl =
       options.dataUrl && options.dataUrl.startsWith('data:') && options.dataUrl.length <= INLINE_DATA_URL_MAX_CHARS
         ? options.dataUrl
-        : await blobToInlineDataUrl(sourceBlob);
+        : chunksToInlineDataUrl(preReadChunks, finalMime);
     onProgress?.(100);
     return inlineUrl;
   }
 
-  const finalMime = (resolvedMime || 'video/mp4').slice(0, 120);
   const safeFilename = (
     options.filename ||
-    (sourceBlob instanceof File ? sourceBlob.name : '') ||
+    options.preparedSource?.filename ||
+    (options.blob instanceof File ? options.blob.name : '') ||
     (finalMime.startsWith('video/') ? 'video.mp4' : 'attachment')
   ).slice(0, 240);
 
-  const totalChunks = Math.ceil(sourceBlob.size / CHUNK_RAW_BYTES);
+  const totalChunks = canStreamNativeFile
+    ? Math.ceil(totalBytes / CHUNK_RAW_BYTES)
+    : preReadChunks!.length;
+
   const mediaId = `media_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
   const assetPath = `mediaAssets/${mediaId}`;
   const assetRef = doc(db, 'mediaAssets', mediaId);
@@ -364,7 +782,7 @@ export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promis
       uploaderId: (uploaderId || 'anonymous').slice(0, 128),
       mimeType: finalMime,
       filename: safeFilename,
-      size: sourceBlob.size,
+      size: totalBytes,
       chunkSize: CHUNK_RAW_BYTES,
       totalChunks,
       status: 'uploading',
@@ -375,9 +793,9 @@ export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promis
     throw err;
   }
 
-  // Upload chunks in small writeBatches of 6 chunks (~4.3 MB per batch, well below Firestore's 10 MiB batch limit)
+  // Upload chunks in writeBatches of 4 chunks (~2.8 MB per batch, well below Firestore's 10 MiB cap)
   // with 2 concurrent batch workers and automatic per-chunk fallback retry for cellular resilience.
-  const BATCH_CHUNK_COUNT = 6;
+  const BATCH_CHUNK_COUNT = 4;
   const batchRanges: Array<{ start: number; end: number }> = [];
   for (let i = 0; i < totalChunks; i += BATCH_CHUNK_COUNT) {
     batchRanges.push({ start: i, end: Math.min(i + BATCH_CHUNK_COUNT, totalChunks) });
@@ -386,16 +804,30 @@ export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promis
   let uploadedChunks = 0;
   let nextRangeIndex = 0;
 
+  const getChunkBase64At = (idx: number): string => {
+    if (canStreamNativeFile && nativeFileId) {
+      const byteStart = idx * CHUNK_RAW_BYTES;
+      const byteLen = Math.min(CHUNK_RAW_BYTES, totalBytes - byteStart);
+      const b64 = nativeBridge.getSharedFileChunkBase64(nativeFileId, byteStart, byteLen);
+      if (!b64 || typeof b64 !== 'string') {
+        throw new Error(`Unable to read shared file chunk ${idx + 1}/${totalChunks}. Please share the video again.`);
+      }
+      return b64;
+    }
+    const chunkBytes = preReadChunks![idx];
+    if (!chunkBytes || chunkBytes.byteLength === 0) {
+      throw new Error(`Missing media chunk data at part ${idx + 1}/${totalChunks}.`);
+    }
+    return arrayBufferToBase64(chunkBytes);
+  };
+
   const uploadSingleRange = async (start: number, end: number) => {
     const chunkPayloads: Array<{ index: number; docId: string; base64: string }> = [];
     for (let idx = start; idx < end; idx++) {
-      const byteStart = idx * CHUNK_RAW_BYTES;
-      const byteEnd = Math.min(byteStart + CHUNK_RAW_BYTES, sourceBlob!.size);
-      const sliceBuf = await sourceBlob!.slice(byteStart, byteEnd).arrayBuffer();
       chunkPayloads.push({
         index: idx,
         docId: padChunkIndex(idx),
-        base64: arrayBufferToBase64(sliceBuf)
+        base64: getChunkBase64At(idx)
       });
     }
 
@@ -440,29 +872,37 @@ export async function uploadLargeMedia(options: UploadLargeMediaOptions): Promis
     }
   };
 
-  const WORKER_CONCURRENCY = 2;
-  const workers = Array.from({ length: Math.min(WORKER_CONCURRENCY, batchRanges.length) }, async () => {
-    while (nextRangeIndex < batchRanges.length) {
-      const current = batchRanges[nextRangeIndex++];
-      await uploadSingleRange(current.start, current.end);
-    }
-  });
-
-  await Promise.all(workers);
-
   try {
-    await updateDoc(assetRef, {
-      status: 'ready'
+    const WORKER_CONCURRENCY = 2;
+    const workers = Array.from({ length: Math.min(WORKER_CONCURRENCY, batchRanges.length) }, async () => {
+      while (nextRangeIndex < batchRanges.length) {
+        const current = batchRanges[nextRangeIndex++];
+        await uploadSingleRange(current.start, current.end);
+      }
     });
-  } catch (err) {
-    rethrowIfPermissionDenied(err, OperationType.UPDATE, assetPath);
-    throw err;
+
+    await Promise.all(workers);
+
+    try {
+      await updateDoc(assetRef, {
+        status: 'ready'
+      });
+    } catch (err) {
+      rethrowIfPermissionDenied(err, OperationType.UPDATE, assetPath);
+      throw err;
+    }
+  } finally {
+    // Once native upload succeeds (or if native temp file was consumed), clean up only on success below
   }
 
-  // Cache locally so the sender can play/view immediately with 0ms latency
-  await cacheMediaBlobLocally(mediaId, sourceBlob, finalMime, safeFilename);
-  onProgress?.(100);
+  if (canStreamNativeFile && options.preparedSource) {
+    releasePreparedMediaSource(options.preparedSource);
+  } else if (preReadChunks) {
+    // Cache locally for instant playback if memory permits (non-fatal)
+    await cacheMediaBlobLocally(mediaId, preReadChunks, finalMime, safeFilename);
+  }
 
+  onProgress?.(100);
   return `${CHUNKED_MEDIA_PREFIX}${mediaId}`;
 }
 
@@ -519,7 +959,7 @@ export async function resolveChunkedMediaToObjectUrl(
 
     const mimeType = meta.mimeType || 'video/mp4';
     const filename = meta.filename || undefined;
-    const orderedParts: BlobPart[] = new Array(totalChunks);
+    const orderedChunks: Uint8Array[] = new Array(totalChunks);
 
     let loadedCount = 0;
     let nextChunkIdx = 0;
@@ -544,7 +984,7 @@ export async function resolveChunkedMediaToObjectUrl(
             if (!chunkData.data) {
               throw new Error(`Empty media chunk ${idx + 1}/${totalChunks}`);
             }
-            orderedParts[idx] = base64ToUint8Array(chunkData.data);
+            orderedChunks[idx] = base64ToUint8Array(chunkData.data);
             loadedCount++;
             onProgress?.(Math.min(99, Math.max(3, Math.round((loadedCount / totalChunks) * 98))));
             break;
@@ -560,12 +1000,14 @@ export async function resolveChunkedMediaToObjectUrl(
 
     await Promise.all(workers);
 
-    const fullBlob = new Blob(orderedParts, { type: mimeType });
-    const objectUrl = await cacheMediaBlobLocally(mediaId, fullBlob, mimeType, filename);
+    const objectUrl = await cacheMediaBlobLocally(mediaId, orderedChunks, mimeType, filename);
+    const cachedEntry = memoryObjectUrlCache.get(mediaId);
+    const fullBlob = cachedEntry?.blob || new Blob(orderedChunks as BlobPart[], { type: mimeType });
+    const finalUrl = objectUrl || URL.createObjectURL(fullBlob);
     onProgress?.(100);
 
     return {
-      objectUrl,
+      objectUrl: finalUrl,
       blob: fullBlob,
       mimeType,
       filename

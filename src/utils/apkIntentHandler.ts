@@ -9,8 +9,20 @@ import { SharedMediaItem } from '../components/ShareMediaModal';
 import { UniversalSharePayload, UniversalShareItem } from '../components/UniversalShareModal';
 export type { UniversalSharePayload, UniversalShareItem };
 import { compressImage } from './imageUtils';
-import { processVideoFile, MAX_VIDEO_SIZE_BYTES, MAX_VIDEO_SIZE_MB } from './mediaUtils';
-import { base64ToUint8Array, CHUNK_RAW_BYTES } from '../services/mediaStorageService';
+import {
+  processVideoFile,
+  generateVideoThumbnail,
+  MAX_VIDEO_SIZE_BYTES,
+  MAX_VIDEO_SIZE_MB
+} from './mediaUtils';
+import {
+  base64ToUint8Array,
+  CHUNK_RAW_BYTES,
+  prepareFileForUpload,
+  readReadableStreamIntoChunks,
+  readBlobIntoChunks,
+  PreparedMediaSource
+} from '../services/mediaStorageService';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 
@@ -108,6 +120,7 @@ export function notifyShareIntent(payload: PendingSharePayload) {
     type: item.type,
     dataUrl: item.dataUrl,
     file: item.file,
+    preparedSource: item.preparedSource,
     mimeType: item.mimeType,
     thumbnailUrl: item.thumbnailUrl,
     duration: item.duration,
@@ -191,13 +204,13 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
             mimeType: file.type || 'image/jpeg'
           });
         } catch {
-          const previewUrl = URL.createObjectURL(file);
+          const preparedSource = await prepareFileForUpload(file, file.name || 'image.png', file.type || 'image/png');
           items.push({
             type: 'image',
-            dataUrl: previewUrl,
-            file,
+            dataUrl: '',
+            preparedSource,
             filename: file.name,
-            size: file.size,
+            size: preparedSource.size,
             mimeType: file.type || 'image/png'
           });
         }
@@ -218,26 +231,25 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
           items.push({
             type: 'video',
             dataUrl: meta.dataUrl,
-            file: meta.file || file,
+            preparedSource: meta.preparedSource,
             thumbnailUrl: meta.thumbnailUrl,
             duration: meta.duration,
-            filename: file.name,
-            size: file.size,
+            filename: file.name || meta.filename,
+            size: meta.size,
             mimeType: meta.mimeType || file.type || 'video/mp4'
           });
-        } catch {
-          const blobUrl = URL.createObjectURL(file);
+        } catch (vidErr: any) {
           items.push({
             type: 'video',
-            dataUrl: blobUrl,
-            file,
-            filename: file.name,
+            dataUrl: '',
+            filename: file.name || 'video.mp4',
             size: file.size,
-            mimeType: file.type || 'video/mp4'
+            mimeType: file.type || 'video/mp4',
+            error: vidErr?.message || `Unable to read "${file.name || 'video'}". Please try sharing it again.`
           });
         }
       } else {
-        // Document / PDF / Audio / Archive / Any file (up to 55MB via streaming Blob)
+        // Document / PDF / Audio / Archive / Any file (up to 55MB via snapshotted 528KB chunks)
         if (file.size > MAX_VIDEO_SIZE_BYTES) {
           items.push({
             type: 'file',
@@ -249,15 +261,30 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
           });
           continue;
         }
-        const blobUrl = URL.createObjectURL(file);
-        items.push({
-          type: 'file',
-          dataUrl: blobUrl,
-          file,
-          filename: file.name || 'Document',
-          size: file.size,
-          mimeType: file.type || 'application/octet-stream'
-        });
+        try {
+          const preparedSource = await prepareFileForUpload(
+            file,
+            file.name || 'Document',
+            file.type || 'application/octet-stream'
+          );
+          items.push({
+            type: 'file',
+            dataUrl: '',
+            preparedSource,
+            filename: file.name || 'Document',
+            size: preparedSource.size,
+            mimeType: file.type || 'application/octet-stream'
+          });
+        } catch (docErr: any) {
+          items.push({
+            type: 'file',
+            dataUrl: '',
+            filename: file.name || 'Document',
+            size: file.size,
+            mimeType: file.type || 'application/octet-stream',
+            error: docErr?.message || `Unable to read "${file.name || 'Document'}".`
+          });
+        }
       }
     } catch (err) {
       console.warn('Could not process shared file:', file.name, err);
@@ -267,30 +294,146 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
   return items;
 }
 
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-}
-
 /**
- * Open IndexedDB shared store
+ * Open IndexedDB v2 shared store (shares + share_chunks)
  */
 function openShareDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('connexa_share_target_db', 1);
+    const request = indexedDB.open('connexa_share_target_db', 2);
     request.onupgradeneeded = (e: any) => {
-      const db = e.target.result;
+      const db = e.target.result as IDBDatabase;
       if (!db.objectStoreNames.contains('shares')) {
         db.createObjectStore('shares', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('share_chunks')) {
+        const chunkStore = db.createObjectStore('share_chunks', { keyPath: 'key' });
+        chunkStore.createIndex('by_share', 'shareId', { unique: false });
       }
     };
     request.onsuccess = (e: any) => resolve(e.target.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+async function readAndDeleteSwShareChunks(
+  db: IDBDatabase,
+  shareId: string,
+  chunkedFiles: Array<{
+    fileIndex: number;
+    category: 'image' | 'video' | 'file';
+    filename: string;
+    mimeType: string;
+    size: number;
+    chunkCount: number;
+    error?: string;
+  }>
+): Promise<UniversalShareItem[]> {
+  const results: UniversalShareItem[] = [];
+  if (!db.objectStoreNames.contains('share_chunks')) {
+    return results;
+  }
+
+  for (const cf of chunkedFiles) {
+    if (cf.error) {
+      results.push({
+        type: cf.category,
+        dataUrl: '',
+        filename: cf.filename,
+        size: cf.size,
+        mimeType: cf.mimeType,
+        error: cf.error
+      });
+      continue;
+    }
+
+    const chunks: Uint8Array[] = [];
+    for (let cIdx = 0; cIdx < cf.chunkCount; cIdx++) {
+      const key = `${shareId}_${cf.fileIndex}_${cIdx}`;
+      const chunkData = await new Promise<ArrayBuffer | null>((resolve) => {
+        try {
+          const tx = db.transaction('share_chunks', 'readwrite');
+          const store = tx.objectStore('share_chunks');
+          const req = store.get(key);
+          req.onsuccess = () => {
+            const val = req.result?.data;
+            store.delete(key);
+            resolve(val instanceof ArrayBuffer ? val : null);
+          };
+          req.onerror = () => resolve(null);
+          tx.onabort = () => resolve(null);
+        } catch {
+          resolve(null);
+        }
+      });
+
+      if (chunkData) {
+        chunks.push(new Uint8Array(chunkData));
+      }
+    }
+
+    if (chunks.length === 0) {
+      results.push({
+        type: cf.category,
+        dataUrl: '',
+        filename: cf.filename,
+        size: cf.size,
+        mimeType: cf.mimeType,
+        error: `Could not read "${cf.filename}". Please share it again.`
+      });
+      continue;
+    }
+
+    const actualSize = chunks.reduce((s, c) => s + c.byteLength, 0);
+    const preparedSource: PreparedMediaSource = {
+      size: actualSize,
+      mimeType: cf.mimeType,
+      filename: cf.filename,
+      chunks
+    };
+
+    if (cf.category === 'image' && actualSize <= 15 * 1024 * 1024) {
+      try {
+        const imgFile = new File(chunks as BlobPart[], cf.filename, { type: cf.mimeType || 'image/jpeg' });
+        const compressed = await compressImage(imgFile, { maxWidth: 1280, maxHeight: 1280, quality: 0.84 });
+        results.push({
+          type: 'image',
+          dataUrl: compressed,
+          filename: cf.filename,
+          size: actualSize,
+          mimeType: 'image/jpeg'
+        });
+        continue;
+      } catch {
+        // Fallback to preparedSource
+      }
+    }
+
+    let thumbnailUrl = '';
+    let duration = 0;
+    if (cf.category === 'video' && actualSize <= 30 * 1024 * 1024) {
+      try {
+        const tempBlob = new Blob(chunks as BlobPart[], { type: cf.mimeType || 'video/mp4' });
+        const thumb = await generateVideoThumbnail(tempBlob);
+        thumbnailUrl = thumb.thumbnail;
+        duration = thumb.duration;
+      } catch {
+        // Non-fatal
+      }
+    }
+
+    results.push({
+      type: cf.category,
+      dataUrl: '',
+      preparedSource,
+      filename: cf.filename,
+      size: actualSize,
+      mimeType: cf.mimeType,
+      thumbnailUrl: thumbnailUrl || undefined,
+      duration: duration || undefined
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -309,7 +452,7 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
 
   try {
     const db = await openShareDb();
-    return new Promise((resolve) => {
+    const rawRecord = await new Promise<any>((resolve) => {
       const tx = db.transaction('shares', 'readwrite');
       const store = tx.objectStore('shares');
 
@@ -346,6 +489,22 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
         getAllReq.onerror = () => resolve(null);
       }
     });
+
+    if (!rawRecord) return null;
+
+    if (Array.isArray(rawRecord.chunkedFiles) && rawRecord.chunkedFiles.length > 0) {
+      const hydratedSwItems = await readAndDeleteSwShareChunks(
+        db,
+        rawRecord.id,
+        rawRecord.chunkedFiles
+      );
+      return {
+        ...rawRecord,
+        items: hydratedSwItems
+      };
+    }
+
+    return rawRecord;
   } catch (err) {
     console.warn('Could not read from share target IndexedDB:', err);
     return null;
@@ -354,11 +513,10 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
 
 /**
  * Hydrate any native Android temp-file references (nativeFileId) or server temp-file URLs (tempFileUrl)
- * into real File/Blob objects with thumbnails so 55MB videos never cause Java/WebView OOM.
+ * WITHOUT ever creating a 50MB Blob/File in Chromium's BlobRegistry!
  */
 async function hydrateExternalSharedItems(rawItems: any[], bridge?: any): Promise<UniversalShareItem[]> {
   const hydrated: UniversalShareItem[] = [];
-  const filesToProcess: File[] = [];
 
   for (const raw of rawItems) {
     if (!raw) continue;
@@ -375,57 +533,144 @@ async function hydrateExternalSharedItems(rawItems: any[], bridge?: any): Promis
       continue;
     }
 
-    // 1. Native Android chunked file bridge (supports 55MB+ videos with ~2MB RAM overhead)
+    // 1. Native Android chunked file bridge (keeps 49-55MB videos on native disk until uploadLargeMedia streams them!)
     if (raw.nativeFileId && bridge && typeof bridge.getSharedFileChunkBase64 === 'function') {
-      try {
-        const totalSize = Number(raw.size || 0);
-        const parts: BlobPart[] = [];
-        let offset = 0;
-        const step = CHUNK_RAW_BYTES;
+      const totalSize = Number(raw.size || 0);
+      const itemType: 'image' | 'video' | 'file' =
+        raw.type === 'image' || raw.type === 'video' || raw.type === 'file' ? raw.type : 'file';
 
-        while (true) {
-          const b64Chunk = bridge.getSharedFileChunkBase64(raw.nativeFileId, offset, step);
-          if (!b64Chunk || typeof b64Chunk !== 'string' || b64Chunk.length === 0) {
-            break;
+      // Compress small shared images (< 15MB) inline so preview & chat send are instant
+      if (itemType === 'image' && totalSize > 0 && totalSize <= 15 * 1024 * 1024) {
+        try {
+          const parts: BlobPart[] = [];
+          let offset = 0;
+          while (offset < totalSize) {
+            const b64Chunk = bridge.getSharedFileChunkBase64(raw.nativeFileId, offset, CHUNK_RAW_BYTES);
+            if (!b64Chunk || typeof b64Chunk !== 'string') break;
+            const bytes = base64ToUint8Array(b64Chunk);
+            if (bytes.byteLength === 0) break;
+            parts.push(bytes);
+            offset += bytes.byteLength;
           }
-          const bytes = base64ToUint8Array(b64Chunk);
-          if (bytes.byteLength === 0) break;
-          parts.push(bytes);
-          offset += bytes.byteLength;
-          if (totalSize > 0 && offset >= totalSize) break;
-        }
-
-        if (typeof bridge.deleteSharedTempFile === 'function') {
-          try {
-            bridge.deleteSharedTempFile(raw.nativeFileId);
-          } catch {
-            // ignore
+          if (typeof bridge.deleteSharedTempFile === 'function') {
+            try {
+              bridge.deleteSharedTempFile(raw.nativeFileId);
+            } catch {
+              // ignore
+            }
           }
+          if (parts.length > 0) {
+            const imgFile = new File(parts, raw.filename || 'shared_photo.jpg', {
+              type: raw.mimeType || 'image/jpeg'
+            });
+            const compressed = await compressImage(imgFile, { maxWidth: 1280, maxHeight: 1280, quality: 0.84 });
+            hydrated.push({
+              type: 'image',
+              dataUrl: compressed,
+              filename: raw.filename,
+              size: totalSize,
+              mimeType: 'image/jpeg'
+            });
+            continue;
+          }
+        } catch (imgErr) {
+          console.warn('Native shared image compression fallback:', imgErr);
         }
-
-        if (parts.length > 0) {
-          const reconstructed = new File(parts, raw.filename || 'shared_video.mp4', {
-            type: raw.mimeType || 'application/octet-stream'
-          });
-          filesToProcess.push(reconstructed);
-          continue;
-        }
-      } catch (err) {
-        console.warn('Failed reading chunked native shared file:', err);
       }
+
+      // For ALL videos (up to 55MB, including 49.x MB) and documents/files:
+      // Keep nativeFileId intact so uploadLargeMedia streams 528KB Base64 chunks directly over JNI with <2MB RAM!
+      hydrated.push({
+        type: itemType,
+        dataUrl: '',
+        preparedSource: {
+          size: totalSize,
+          mimeType: raw.mimeType || (itemType === 'video' ? 'video/mp4' : 'application/octet-stream'),
+          filename: raw.filename || (itemType === 'video' ? 'shared_video.mp4' : 'shared_file'),
+          nativeFileId: raw.nativeFileId
+        },
+        filename: raw.filename,
+        size: totalSize,
+        mimeType: raw.mimeType || (itemType === 'video' ? 'video/mp4' : 'application/octet-stream'),
+        thumbnailUrl: raw.thumbnailUrl || undefined,
+        duration: raw.duration ? Number(raw.duration) : undefined
+      });
+      continue;
     }
 
-    // 2. Express fallback /api/shared-temp/:id binary stream
+    // 2. Express fallback /api/shared-temp/:id binary stream -> stream directly into 528KB Uint8Array chunks!
     if (raw.tempFileUrl && typeof raw.tempFileUrl === 'string') {
       try {
-        const resp = await fetch(raw.tempFileUrl);
+        const consumeUrl = raw.tempFileUrl.includes('?')
+          ? `${raw.tempFileUrl}&consume=1`
+          : `${raw.tempFileUrl}?consume=1`;
+        const resp = await fetch(consumeUrl);
         if (resp.ok) {
-          const blob = await resp.blob();
-          const reconstructed = new File([blob], raw.filename || 'shared_file', {
-            type: raw.mimeType || blob.type || 'application/octet-stream'
-          });
-          filesToProcess.push(reconstructed);
-          continue;
+          let chunks: Uint8Array[] = [];
+          let totalBytes = 0;
+          if (resp.body) {
+            const streamed = await readReadableStreamIntoChunks(resp.body, Number(raw.size || 0));
+            chunks = streamed.chunks;
+            totalBytes = streamed.totalBytes;
+          } else {
+            const b = await resp.blob();
+            chunks = await readBlobIntoChunks(b);
+            totalBytes = chunks.reduce((s, c) => s + c.byteLength, 0);
+          }
+
+          if (chunks.length > 0) {
+            const itemType: 'image' | 'video' | 'file' =
+              raw.type === 'image' || raw.type === 'video' || raw.type === 'file' ? raw.type : 'file';
+            const mime = raw.mimeType || resp.headers.get('content-type') || 'application/octet-stream';
+            const filename = raw.filename || 'shared_file';
+
+            if (itemType === 'image' && totalBytes <= 15 * 1024 * 1024) {
+              try {
+                const imgFile = new File(chunks as BlobPart[], filename, { type: mime });
+                const compressed = await compressImage(imgFile, { maxWidth: 1280, maxHeight: 1280, quality: 0.84 });
+                hydrated.push({
+                  type: 'image',
+                  dataUrl: compressed,
+                  filename,
+                  size: totalBytes,
+                  mimeType: 'image/jpeg'
+                });
+                continue;
+              } catch {
+                // fallback to preparedSource
+              }
+            }
+
+            let thumbnailUrl = '';
+            let duration = 0;
+            if (itemType === 'video' && totalBytes <= 30 * 1024 * 1024) {
+              try {
+                const tempBlob = new Blob(chunks as BlobPart[], { type: mime });
+                const thumb = await generateVideoThumbnail(tempBlob);
+                thumbnailUrl = thumb.thumbnail;
+                duration = thumb.duration;
+              } catch {
+                // ignore
+              }
+            }
+
+            hydrated.push({
+              type: itemType,
+              dataUrl: '',
+              preparedSource: {
+                size: totalBytes,
+                mimeType: mime,
+                filename,
+                chunks
+              },
+              filename,
+              size: totalBytes,
+              mimeType: mime,
+              thumbnailUrl: thumbnailUrl || undefined,
+              duration: duration || undefined
+            });
+            continue;
+          }
         }
       } catch (err) {
         console.warn('Failed fetching temp shared file:', err);
@@ -433,11 +678,6 @@ async function hydrateExternalSharedItems(rawItems: any[], bridge?: any): Promis
     }
 
     hydrated.push(raw as UniversalShareItem);
-  }
-
-  if (filesToProcess.length > 0) {
-    const processed = await processIncomingFilesForSharing(filesToProcess);
-    hydrated.push(...processed);
   }
 
   return hydrated;
@@ -737,11 +977,10 @@ export function initShareTargetListener() {
     navigator.serviceWorker.addEventListener('message', async (event) => {
       if (event.data?.type === 'WEB_SHARE_TARGET_MEDIA' || event.data?.type === 'WEB_SHARE_TARGET_FILE') {
         const { files, text, title, shareId } = event.data;
-        // Clear IndexedDB copy so we don't process twice on next focus
-        if (shareId) {
-          fetchAndClearSharedRecord(shareId).catch(() => {});
-        }
         if (files && files.length > 0) {
+          if (shareId) {
+            fetchAndClearSharedRecord(shareId).catch(() => {});
+          }
           const items = await processIncomingFilesForSharing(files);
           const onlyDocs = items.length > 0 && items.every(i => i.type === 'file');
           notifyUniversalShareIntent({
@@ -752,6 +991,24 @@ export function initShareTargetListener() {
             text,
             source: 'web-share-target'
           });
+        } else if (shareId) {
+          const record = await fetchAndClearSharedRecord(shareId);
+          if (record && record.items && record.items.length > 0) {
+            const hydratedItems = await hydrateExternalSharedItems(record.items);
+            const hasDoc =
+              hydratedItems.some(i => i.type === 'file') &&
+              !hydratedItems.some(i => i.type === 'image' || i.type === 'video');
+            notifyUniversalShareIntent({
+              type: hasDoc ? 'file' : 'media',
+              items: hydratedItems,
+              title: record.title || title,
+              caption: record.text || text,
+              text: record.text || text,
+              source: 'web-share-target'
+            });
+          } else {
+            checkPendingShareTargets();
+          }
         } else {
           checkPendingShareTargets();
         }

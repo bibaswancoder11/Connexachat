@@ -68,45 +68,130 @@ self.addEventListener('push', (event) => {
   event.waitUntil(self.registration.showNotification(data.title || 'Connexa Messenger', options));
 });
 
-// IndexedDB helper for Web Share Target persistence
+// IndexedDB v2 helper for Web Share Target persistence (supports 55MB videos via chunked ArrayBuffers)
+const CHUNK_RAW_BYTES = 540672;
+const MAX_SHARED_BYTES = 55 * 1024 * 1024;
+
 function openShareDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('connexa_share_target_db', 1);
+    const request = indexedDB.open('connexa_share_target_db', 2);
     request.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains('shares')) {
         db.createObjectStore('shares', { keyPath: 'id' });
       }
+      if (!db.objectStoreNames.contains('share_chunks')) {
+        const chunkStore = db.createObjectStore('share_chunks', { keyPath: 'key' });
+        chunkStore.createIndex('by_share', 'shareId', { unique: false });
+      }
     };
     request.onsuccess = (e) => resolve(e.target.result);
-    request.onerror = (e) => reject(request.error);
+    request.onerror = () => reject(request.error);
   });
 }
 
-async function storeShareRecord(record) {
+async function readSharedFileIntoChunks(file) {
+  if (typeof file.stream === 'function') {
+    try {
+      const reader = file.stream().getReader();
+      const chunks = [];
+      let currentBuf = new Uint8Array(CHUNK_RAW_BYTES);
+      let currentOffset = 0;
+      let totalBytes = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!value || value.byteLength === 0) continue;
+
+        let srcOffset = 0;
+        while (srcOffset < value.byteLength) {
+          const spaceLeft = CHUNK_RAW_BYTES - currentOffset;
+          const toCopy = Math.min(spaceLeft, value.byteLength - srcOffset);
+          currentBuf.set(value.subarray(srcOffset, srcOffset + toCopy), currentOffset);
+          currentOffset += toCopy;
+          srcOffset += toCopy;
+          totalBytes += toCopy;
+
+          if (currentOffset === CHUNK_RAW_BYTES) {
+            chunks.push(currentBuf.buffer);
+            currentBuf = new Uint8Array(CHUNK_RAW_BYTES);
+            currentOffset = 0;
+          }
+        }
+      }
+
+      if (currentOffset > 0) {
+        chunks.push(currentBuf.slice(0, currentOffset).buffer);
+      }
+
+      if (totalBytes > 0 && chunks.length > 0) {
+        return { chunks, size: totalBytes };
+      }
+    } catch (err) {
+      console.warn('SW stream read fallback:', err);
+    }
+  }
+
+  // Fallback: sequential slice.arrayBuffer()
+  const chunks = [];
+  let totalBytes = 0;
+  for (let offset = 0; offset < file.size; offset += CHUNK_RAW_BYTES) {
+    const end = Math.min(offset + CHUNK_RAW_BYTES, file.size);
+    const buf = await file.slice(offset, end).arrayBuffer();
+    chunks.push(buf);
+    totalBytes += buf.byteLength;
+  }
+  return { chunks, size: totalBytes };
+}
+
+async function storeChunkedShareRecord(shareId, record, chunkEntries) {
   try {
     const db = await openShareDb();
-    return new Promise((resolve, reject) => {
+    // Write chunks in small transactions so IndexedDB never hits memory caps on 50MB+ videos
+    const BATCH_SIZE = 12;
+    for (let i = 0; i < chunkEntries.length; i += BATCH_SIZE) {
+      const batch = chunkEntries.slice(i, i + BATCH_SIZE);
+      await new Promise((resolve, reject) => {
+        const tx = db.transaction('share_chunks', 'readwrite');
+        const store = tx.objectStore('share_chunks');
+        for (const entry of batch) {
+          store.put(entry);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('IDB chunk write aborted'));
+      });
+    }
+
+    await new Promise((resolve, reject) => {
       const tx = db.transaction('shares', 'readwrite');
-      const store = tx.objectStore('shares');
-      const req = store.put(record);
-      req.onsuccess = () => resolve(record.id);
-      req.onerror = () => reject(req.error);
+      tx.objectStore('shares').put(record);
+      tx.oncomplete = () => resolve(shareId);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('IDB share record write aborted'));
     });
+
+    return shareId;
   } catch (err) {
-    console.warn('Failed to store share record in IndexedDB:', err);
+    console.warn('Failed to store chunked share record in IndexedDB:', err);
     return null;
   }
 }
 
-function isVisualMediaFile(file) {
+function classifySharedFile(file) {
   const mime = (file?.type || '').toLowerCase();
-  if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
   const name = (file?.name || '').toLowerCase();
-  return /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg|mp4|webm|mov|mkv|avi|m4v|3gp)$/.test(name);
+  if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg)$/.test(name)) {
+    return 'image';
+  }
+  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v|3gp)$/.test(name)) {
+    return 'video';
+  }
+  return 'file';
 }
 
-// Intercept Web Share Target POST requests (Images, Videos, Documents, Links, Text)
+// Intercept Web Share Target POST requests (Images, Videos up to 55MB, Documents, Links, Text)
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'POST') return;
 
@@ -139,9 +224,65 @@ self.addEventListener('fetch', (event) => {
 
         const shareId = 'share_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
         const hasFiles = collectedFiles.length > 0;
-        const allDocs = hasFiles && collectedFiles.every((f) => !isVisualMediaFile(f));
 
-        // Store in IndexedDB so the client retrieves files/links reliably even when launched cold
+        // Read all shared files IMMEDIATELY into 528KB ArrayBuffers while the POST multipart stream is open!
+        const chunkedFiles = [];
+        const chunkEntries = [];
+
+        for (let fIdx = 0; fIdx < collectedFiles.length; fIdx++) {
+          const f = collectedFiles[fIdx];
+          const category = classifySharedFile(f);
+          const filename = f.name || (category === 'video' ? 'shared_video.mp4' : 'shared_file');
+          const mimeType = f.type || (category === 'video' ? 'video/mp4' : 'application/octet-stream');
+
+          if (f.size > MAX_SHARED_BYTES) {
+            chunkedFiles.push({
+              fileIndex: fIdx,
+              category,
+              filename,
+              mimeType,
+              size: f.size,
+              chunkCount: 0,
+              error: `${category === 'video' ? 'Video' : 'File'} "${filename}" is ${(f.size / (1024 * 1024)).toFixed(1)}MB. Maximum supported size is 55MB.`
+            });
+            continue;
+          }
+
+          try {
+            const { chunks, size } = await readSharedFileIntoChunks(f);
+            for (let cIdx = 0; cIdx < chunks.length; cIdx++) {
+              chunkEntries.push({
+                key: `${shareId}_${fIdx}_${cIdx}`,
+                shareId,
+                fileIndex: fIdx,
+                chunkIndex: cIdx,
+                data: chunks[cIdx]
+              });
+            }
+            chunkedFiles.push({
+              fileIndex: fIdx,
+              category,
+              filename,
+              mimeType,
+              size,
+              chunkCount: chunks.length
+            });
+          } catch (readErr) {
+            console.warn('SW could not read shared file:', filename, readErr);
+            chunkedFiles.push({
+              fileIndex: fIdx,
+              category,
+              filename,
+              mimeType,
+              size: f.size,
+              chunkCount: 0,
+              error: `Could not read "${filename}". Please try sharing it again.`
+            });
+          }
+        }
+
+        const allDocs = hasFiles && chunkedFiles.length > 0 && chunkedFiles.every((cf) => cf.category === 'file');
+
         const shareRecord = {
           id: shareId,
           timestamp: Date.now(),
@@ -149,19 +290,18 @@ self.addEventListener('fetch', (event) => {
           title,
           text,
           url: sharedUrl,
-          files: collectedFiles
+          chunkedFiles
         };
 
-        await storeShareRecord(shareRecord);
+        await storeChunkedShareRecord(shareId, shareRecord, chunkEntries);
 
-        // Broadcast immediately if Connexa already has an open client window
+        // Notify any already-open Connexa client window via lightweight shareId signal (avoids cloning 50MB File over postMessage)
         const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
         for (const client of clientList) {
           if (hasFiles) {
             client.postMessage({
               type: allDocs ? 'WEB_SHARE_TARGET_FILE' : 'WEB_SHARE_TARGET_MEDIA',
               shareId,
-              files: collectedFiles,
               title,
               text
             });

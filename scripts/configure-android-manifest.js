@@ -189,6 +189,8 @@ import com.getcapacitor.BridgeActivity;
 import android.content.ClipData;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -199,6 +201,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -213,6 +216,7 @@ import java.util.concurrent.Executors;
 public class MainActivity extends BridgeActivity {
 
     private static final long MAX_SHARED_FILE_BYTES = 55L * 1024L * 1024L; // 55 MB limit
+    private static final long STALE_CACHE_TTL_MS = 60L * 60L * 1000L; // 60 minutes
     private volatile String pendingSharedPayloadJson = null;
     private final ExecutorService shareExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -224,6 +228,20 @@ public class MainActivity extends BridgeActivity {
             dir.mkdirs();
         }
         return dir;
+    }
+
+    private void cleanupStaleShareCacheFiles() {
+        try {
+            File dir = getShareCacheDir();
+            File[] files = dir.listFiles();
+            if (files == null) return;
+            long now = System.currentTimeMillis();
+            for (File f : files) {
+                if (f != null && f.isFile() && (now - f.lastModified() > STALE_CACHE_TTL_MS)) {
+                    f.delete();
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     public class ConnexaShareBridge {
@@ -256,7 +274,12 @@ public class MainActivity extends BridgeActivity {
                 RandomAccessFile raf = new RandomAccessFile(target, "r");
                 try {
                     raf.seek(offset);
-                    int actual = raf.read(buf, 0, toRead);
+                    int actual = 0;
+                    while (actual < toRead) {
+                        int n = raf.read(buf, actual, toRead - actual);
+                        if (n <= 0) break;
+                        actual += n;
+                    }
                     if (actual <= 0) return "";
                     if (actual < toRead) {
                         byte[] exact = new byte[actual];
@@ -391,6 +414,7 @@ public class MainActivity extends BridgeActivity {
 
             shareExecutor.execute(() -> {
                 try {
+                    cleanupStaleShareCacheFiles();
                     JSONObject payload = new JSONObject();
                     payload.put("source", "android-share-sheet");
                     if (sharedTitle != null && !sharedTitle.trim().isEmpty()) {
@@ -544,6 +568,40 @@ public class MainActivity extends BridgeActivity {
                 return tooLarge;
             }
 
+            String thumbnailDataUrl = "";
+            int durationSeconds = 0;
+            if ("video".equals(itemType) && outFile.exists() && outFile.length() > 0) {
+                MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+                try {
+                    retriever.setDataSource(outFile.getAbsolutePath());
+                    String durStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION);
+                    if (durStr != null) {
+                        long durMs = Long.parseLong(durStr);
+                        if (durMs > 0) {
+                            durationSeconds = (int) Math.round(durMs / 1000.0);
+                        }
+                    }
+                    Bitmap frame = retriever.getFrameAtTime(200000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                    if (frame != null) {
+                        int w = frame.getWidth();
+                        int h = frame.getHeight();
+                        int targetW = Math.min(360, Math.max(1, w));
+                        int targetH = Math.max(1, Math.round(((float) h / (float) Math.max(1, w)) * targetW));
+                        Bitmap scaled = (w > 360) ? Bitmap.createScaledBitmap(frame, targetW, targetH, true) : frame;
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 72, baos);
+                        thumbnailDataUrl = "data:image/jpeg;base64," + Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+                        if (scaled != frame) {
+                            scaled.recycle();
+                        }
+                        frame.recycle();
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    try { retriever.release(); } catch (Throwable ignored) {}
+                }
+            }
+
             JSONObject obj = new JSONObject();
             obj.put("type", itemType);
             obj.put("dataUrl", "");
@@ -551,6 +609,12 @@ public class MainActivity extends BridgeActivity {
             obj.put("filename", filename);
             obj.put("size", totalWritten > 0 ? totalWritten : declaredSize);
             obj.put("mimeType", actualMime);
+            if (!thumbnailDataUrl.isEmpty()) {
+                obj.put("thumbnailUrl", thumbnailDataUrl);
+            }
+            if (durationSeconds > 0) {
+                obj.put("duration", durationSeconds);
+            }
             return obj;
         } catch (Throwable e) {
             e.printStackTrace();

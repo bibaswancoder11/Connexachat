@@ -25,7 +25,8 @@ import { dispatchBackgroundPushNotification } from './notificationService';
 import {
   uploadLargeMedia,
   isChunkedMediaUrl,
-  INLINE_DATA_URL_MAX_CHARS
+  INLINE_DATA_URL_MAX_CHARS,
+  PreparedMediaSource
 } from './mediaStorageService';
 
 export const getOrCreateChat = async (uid1: string, uid2: string): Promise<string> => {
@@ -373,6 +374,7 @@ export const sendMessage = async (
   mediaUrl?: string,
   senderProfile?: UserProfile,
   extraMedia?: {
+    mediaPreparedSource?: PreparedMediaSource;
     mediaBlob?: Blob | File;
     mediaThumbnail?: string;
     mediaDuration?: number;
@@ -386,6 +388,7 @@ export const sendMessage = async (
 
   let finalMediaUrl = mediaUrl;
   const needsChunkedUpload =
+    Boolean(extraMedia?.mediaPreparedSource) ||
     Boolean(extraMedia?.mediaBlob) ||
     Boolean(
       finalMediaUrl &&
@@ -396,6 +399,7 @@ export const sendMessage = async (
 
   if (needsChunkedUpload) {
     finalMediaUrl = await uploadLargeMedia({
+      preparedSource: extraMedia?.mediaPreparedSource,
       blob: extraMedia?.mediaBlob,
       dataUrl: finalMediaUrl,
       mimeType: extraMedia?.fileType || (type === 'video' ? 'video/mp4' : undefined),

@@ -17,6 +17,7 @@ import { MessageSquare, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
 import { UniversalShareModal, UniversalSharePayload } from './components/UniversalShareModal';
 import { initShareTargetListener, subscribeToUniversalShareIntents } from './utils/apkIntentHandler';
+import { releasePreparedMediaSource } from './services/mediaStorageService';
 import { IncomingCallBanner } from './components/IncomingCallBanner';
 import { CallModal } from './components/CallModal';
 import { CallSession, CallType } from './types';
@@ -73,8 +74,11 @@ const ConnexaApp: React.FC = () => {
     if (Capacitor.isNativePlatform()) {
       let removeListener: (() => void) | null = null;
       CapApp.addListener('backButton', ({ canGoBack }) => {
-        // 1. If universal share modal is open, cancel it
+        // 1. If universal share modal is open, cancel it and release any temp/chunked media sources
         if (universalSharePayloadRef.current) {
+          universalSharePayloadRef.current.items.forEach((item) => {
+            releasePreparedMediaSource(item.preparedSource);
+          });
           setUniversalSharePayload(null);
           return;
         }

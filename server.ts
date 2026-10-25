@@ -15,7 +15,16 @@ const app = express();
 const PORT = 3000;
 const MAX_SHARED_BYTES = 55 * 1024 * 1024; // 55 MB
 
-app.use(compression());
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.path?.startsWith('/api/shared-temp/')) {
+        return false;
+      }
+      return compression.filter(req, res);
+    }
+  })
+);
 app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '60mb' }));
 
@@ -40,16 +49,27 @@ setInterval(() => {
 
 app.get('/api/shared-temp/:fileId', (req, res) => {
   const { fileId } = req.params;
+  const shouldConsume = req.query.consume === '1';
   const entry = tempSharedFiles.get(fileId);
   if (!entry || !fs.existsSync(entry.filePath)) {
     return res.status(404).json({ error: 'Shared temporary file expired or not found.' });
   }
   res.setHeader('Content-Type', entry.mimeType);
   res.setHeader('Content-Length', String(entry.size));
+  res.setHeader('Cache-Control', 'no-store');
   const stream = fs.createReadStream(entry.filePath);
-  stream.on('close', () => {
-    tempSharedFiles.delete(fileId);
-    fs.promises.unlink(entry.filePath).catch(() => {});
+  res.on('finish', () => {
+    if (shouldConsume) {
+      tempSharedFiles.delete(fileId);
+      fs.promises.unlink(entry.filePath).catch(() => {});
+    }
+  });
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.status(500).end();
+    } else {
+      res.end();
+    }
   });
   stream.pipe(res);
 });
@@ -111,8 +131,35 @@ app.post(['/', '/share-target', '/index.html'], async (req, res) => {
 
           const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
           const tmpPath = path.join(os.tmpdir(), `connexa_${tempId}`);
-          const buf = Buffer.from(await f.arrayBuffer());
-          await fs.promises.writeFile(tmpPath, buf);
+
+          if (typeof f.stream === 'function') {
+            const writeStream = fs.createWriteStream(tmpPath);
+            const reader = f.stream().getReader();
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (value && value.byteLength > 0) {
+                  if (!writeStream.write(Buffer.from(value.buffer, value.byteOffset, value.byteLength))) {
+                    await new Promise<void>((r) => writeStream.once('drain', r));
+                  }
+                }
+              }
+              await new Promise<void>((resolve, reject) => {
+                writeStream.end(() => resolve());
+                writeStream.once('error', reject);
+              });
+            } finally {
+              try {
+                reader.releaseLock();
+              } catch {
+                // ignore
+              }
+            }
+          } else {
+            const buf = Buffer.from(await f.arrayBuffer());
+            await fs.promises.writeFile(tmpPath, buf);
+          }
 
           tempSharedFiles.set(tempId, {
             filePath: tmpPath,
@@ -152,10 +199,14 @@ app.post(['/', '/share-target', '/index.html'], async (req, res) => {
   var record = ${recordJson};
   function finish(){ window.location.replace('/?share_intent=universal&shared_id=' + encodeURIComponent(record.id)); }
   try {
-    var req = indexedDB.open('connexa_share_target_db', 1);
+    var req = indexedDB.open('connexa_share_target_db', 2);
     req.onupgradeneeded = function(e){
       var db = e.target.result;
       if (!db.objectStoreNames.contains('shares')) db.createObjectStore('shares', { keyPath: 'id' });
+      if (!db.objectStoreNames.contains('share_chunks')) {
+        var cs = db.createObjectStore('share_chunks', { keyPath: 'key' });
+        cs.createIndex('by_share', 'shareId', { unique: false });
+      }
     };
     req.onsuccess = function(e){
       try {

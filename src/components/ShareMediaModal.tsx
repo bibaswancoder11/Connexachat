@@ -15,7 +15,11 @@ import {
 import { UserProfile, ChatRoom } from '../types';
 import { isUserBlockedLocally } from '../services/blockService';
 import { getOrCreateChat, sendMessage } from '../services/chatService';
-import { uploadLargeMedia } from '../services/mediaStorageService';
+import {
+  uploadLargeMedia,
+  PreparedMediaSource,
+  releasePreparedMediaSource
+} from '../services/mediaStorageService';
 import { compressImage } from '../utils/imageUtils';
 import { processVideoFile } from '../utils/mediaUtils';
 import { EnlargeableAvatar } from './EnlargeableAvatar';
@@ -25,6 +29,7 @@ export interface SharedMediaItem {
   type: 'image' | 'video';
   dataUrl: string;
   file?: File | Blob;
+  preparedSource?: PreparedMediaSource;
   size?: number;
   mimeType?: string;
   thumbnailUrl?: string;
@@ -197,6 +202,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
             type: 'video',
             dataUrl: meta.dataUrl,
             file: meta.file,
+            preparedSource: meta.preparedSource,
             size: meta.size,
             mimeType: meta.mimeType,
             thumbnailUrl: meta.thumbnailUrl,
@@ -215,7 +221,13 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   };
 
   const handleRemoveMedia = (index: number) => {
-    setMediaItems(prev => prev.filter((_, idx) => idx !== index));
+    setMediaItems(prev => {
+      const target = prev[index];
+      if (target?.preparedSource) {
+        releasePreparedMediaSource(target.preparedSource);
+      }
+      return prev.filter((_, idx) => idx !== index);
+    });
   };
 
   // 1-Tap automatic send to one or multiple recipients (supports videos up to 55MB)
@@ -245,6 +257,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
       for (let idx = 0; idx < mediaItems.length; idx++) {
         const item = mediaItems[idx];
         const uploadedUrl = await uploadLargeMedia({
+          preparedSource: item.preparedSource,
           blob: item.file,
           dataUrl: item.dataUrl,
           mimeType: item.mimeType,
@@ -254,10 +267,15 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
             setUploadProgress(Math.round(((idx * 100 + pct) / mediaItems.length)));
           }
         });
+        releasePreparedMediaSource(item.preparedSource);
+        item.dataUrl = uploadedUrl;
+        item.file = undefined;
+        item.preparedSource = undefined;
         uploadedItems.push({
           ...item,
           dataUrl: uploadedUrl,
-          file: undefined
+          file: undefined,
+          preparedSource: undefined
         });
       }
 

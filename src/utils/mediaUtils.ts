@@ -3,15 +3,19 @@
 import {
   MAX_VIDEO_SIZE_BYTES,
   MAX_VIDEO_SIZE_MB,
+  PreparedMediaSource,
+  prepareFileForUpload,
   isChunkedMediaUrl,
   resolveChunkedMediaToObjectUrl
 } from '../services/mediaStorageService';
 
 export { MAX_VIDEO_SIZE_BYTES, MAX_VIDEO_SIZE_MB };
+export type { PreparedMediaSource };
 
 export interface VideoMetadata {
   dataUrl: string;
   file?: File | Blob;
+  preparedSource?: PreparedMediaSource;
   mimeType?: string;
   filename?: string;
   thumbnailUrl: string;
@@ -78,19 +82,25 @@ export const requestCameraPermission = async (): Promise<{ granted: boolean; err
 
 /**
  * Extract a poster thumbnail and duration from a video file using streaming ObjectURL
- * (with fallback timeout so large/exotic containers up to 55MB never hang)
+ * (with fallback timeout so large/exotic containers up to 55MB never hang or throw)
  */
 export const generateVideoThumbnail = (
   videoFile: File | Blob
 ): Promise<{ thumbnail: string; duration: number; width: number; height: number }> => {
   return new Promise((resolve) => {
     let settled = false;
+    let url = '';
     const video = document.createElement('video');
     video.preload = 'metadata';
     video.muted = true;
     video.playsInline = true;
 
-    const url = URL.createObjectURL(videoFile);
+    try {
+      url = URL.createObjectURL(videoFile);
+    } catch {
+      resolve({ thumbnail: '', duration: 0, width: 480, height: 270 });
+      return;
+    }
 
     const finalize = (result: { thumbnail: string; duration: number; width: number; height: number }) => {
       if (settled) return;
@@ -102,7 +112,13 @@ export const generateVideoThumbnail = (
       } catch {
         // ignore
       }
-      URL.revokeObjectURL(url);
+      if (url) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
       resolve(result);
     };
 
@@ -114,7 +130,7 @@ export const generateVideoThumbnail = (
         width: video.videoWidth || 480,
         height: video.videoHeight || 270
       });
-    }, 8000);
+    }, 6500);
 
     video.onloadedmetadata = () => {
       const validDuration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : 0;
@@ -188,11 +204,13 @@ export const generateVideoThumbnail = (
 
 /**
  * Process and validate a video file up to 55MB for chat or external sharing.
- * Uses a streaming Blob ObjectURL instead of loading a 75MB base64 string into RAM.
+ * Immediately snapshots 528 KB binary chunks while the Android/browser File handle is fresh,
+ * preventing NotReadableError ("uploaded file is unable to read") and BlobRegistry exhaustion.
  */
 export const processVideoFile = async (
   file: File,
-  maxSizeBytes = MAX_VIDEO_SIZE_BYTES
+  maxSizeBytes = MAX_VIDEO_SIZE_BYTES,
+  onReadProgress?: (percent: number) => void
 ): Promise<VideoMetadata> => {
   if (!isSupportedVideoFile(file, file.name)) {
     throw new Error('Please select a valid video file (MP4, WebM, MOV, MKV, 3GP).');
@@ -205,20 +223,33 @@ export const processVideoFile = async (
     );
   }
 
-  const { thumbnail, duration, width, height } = await generateVideoThumbnail(file);
   const resolvedMime = file.type || 'video/mp4';
-  const previewObjectUrl = URL.createObjectURL(file);
+  const filename = file.name || 'video.mp4';
+
+  // 1. Read file into 528 KB Uint8Array chunks FIRST while OS/Android content:// descriptor is fresh
+  const preparedSource = await prepareFileForUpload(file, filename, resolvedMime, onReadProgress);
+
+  // 2. Extract poster thumbnail & duration (non-blocking fallback if OS closed original stream after read)
+  let thumbInfo = await generateVideoThumbnail(file);
+  if (!thumbInfo.thumbnail && preparedSource.chunks && preparedSource.size <= 30 * 1024 * 1024) {
+    try {
+      const tempBlob = new Blob(preparedSource.chunks as BlobPart[], { type: resolvedMime });
+      thumbInfo = await generateVideoThumbnail(tempBlob);
+    } catch {
+      // ignore fallback thumbnail failure
+    }
+  }
 
   return {
-    dataUrl: previewObjectUrl,
-    file,
+    dataUrl: '',
+    preparedSource,
     mimeType: resolvedMime,
-    filename: file.name || 'video.mp4',
-    thumbnailUrl: thumbnail,
-    duration,
-    size: file.size,
-    width,
-    height
+    filename,
+    thumbnailUrl: thumbInfo.thumbnail,
+    duration: thumbInfo.duration,
+    size: preparedSource.size,
+    width: thumbInfo.width,
+    height: thumbInfo.height
   };
 };
 

@@ -53,7 +53,11 @@ import {
   MAX_VIDEO_SIZE_MB,
   VideoMetadata 
 } from '../utils/mediaUtils';
-import { isChunkedMediaUrl } from '../services/mediaStorageService';
+import {
+  isChunkedMediaUrl,
+  prepareFileForUpload,
+  releasePreparedMediaSource
+} from '../services/mediaStorageService';
 import { 
   subscribeToMessages, 
   sendMessage, 
@@ -299,6 +303,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
         maxHeight: 1200,
         quality: 0.82
       });
+      if (selectedVideo?.preparedSource) {
+        releasePreparedMediaSource(selectedVideo.preparedSource);
+      }
       setSelectedImage(compressed);
       setSelectedVideo(null);
     } catch (err) {
@@ -308,6 +315,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setIsProcessingMedia(false);
       setMediaProcessingLabel('');
       if (imageInputRef.current) imageInputRef.current.value = '';
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
     }
   };
 
@@ -316,6 +324,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setMediaError(null);
     if (!isSupportedVideoFile(file, file.name)) {
       setMediaError('Please select a valid video file (MP4, WebM, MOV, MKV, 3GP).');
+      if (videoInputRef.current) videoInputRef.current.value = '';
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
       return;
     }
     if (file.size > MAX_VIDEO_SIZE_BYTES) {
@@ -323,12 +333,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
         `Video file is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum supported video size is ${MAX_VIDEO_SIZE_MB}MB.`
       );
       if (videoInputRef.current) videoInputRef.current.value = '';
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
       return;
     }
     setIsProcessingMedia(true);
-    setMediaProcessingLabel('Preparing video preview...');
+    setUploadProgressPercent(0);
+    setMediaProcessingLabel('Reading video (0%)...');
     try {
-      const meta = await processVideoFile(file, MAX_VIDEO_SIZE_BYTES);
+      const meta = await processVideoFile(file, MAX_VIDEO_SIZE_BYTES, (pct) => {
+        setUploadProgressPercent(pct);
+        setMediaProcessingLabel(pct < 100 ? `Reading video (${pct}%)...` : 'Preparing video preview...');
+      });
+      if (selectedVideo?.preparedSource) {
+        releasePreparedMediaSource(selectedVideo.preparedSource);
+      }
       setSelectedVideo(meta);
       setSelectedImage(null);
     } catch (err: any) {
@@ -336,8 +354,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setMediaError(err.message || 'Could not process video file.');
     } finally {
       setIsProcessingMedia(false);
+      setUploadProgressPercent(null);
       setMediaProcessingLabel('');
       if (videoInputRef.current) videoInputRef.current.value = '';
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
     }
   };
 
@@ -361,8 +381,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
     setIsProcessingMedia(true);
     setUploadProgressPercent(0);
-    setMediaProcessingLabel(`Uploading ${file.name}...`);
+    setMediaProcessingLabel(`Reading ${file.name}...`);
+    let preparedDoc: Awaited<ReturnType<typeof prepareFileForUpload>> | undefined;
     try {
+      preparedDoc = await prepareFileForUpload(
+        file,
+        file.name,
+        file.type || 'application/octet-stream',
+        (pct) => {
+          setMediaProcessingLabel(`Reading ${file.name} (${pct}%)...`);
+        }
+      );
+      setMediaProcessingLabel(`Uploading ${file.name} (0%)...`);
       await sendMessage(
         chat.id,
         userProfile.uid,
@@ -372,9 +402,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         userProfile,
         {
           mediaBlob: file,
+          mediaPreparedSource: preparedDoc,
           filename: file.name,
-          mediaSize: file.size,
-          fileType: file.type || 'application/octet-stream',
+          mediaSize: preparedDoc.size || file.size,
+          fileType: preparedDoc.mimeType || file.type || 'application/octet-stream',
           onUploadProgress: (pct) => {
             setUploadProgressPercent(pct);
             setMediaProcessingLabel(`Uploading ${file.name} (${pct}%)...`);
@@ -385,6 +416,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       console.error('Failed to attach document:', err);
       setMediaError(err?.message || 'Could not upload document file.');
     } finally {
+      releasePreparedMediaSource(preparedDoc);
       setIsProcessingMedia(false);
       setUploadProgressPercent(null);
       setMediaProcessingLabel('');
@@ -498,6 +530,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             userProfile,
             {
               mediaBlob: vidToSend.file,
+              mediaPreparedSource: vidToSend.preparedSource,
               mediaThumbnail: vidToSend.thumbnailUrl,
               mediaDuration: vidToSend.duration,
               mediaSize: vidToSend.size,
@@ -510,6 +543,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }
           );
         } finally {
+          releasePreparedMediaSource(vidToSend.preparedSource);
           setIsProcessingMedia(false);
           setUploadProgressPercent(null);
           setMediaProcessingLabel('');
@@ -1473,7 +1507,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {!isProcessingMedia && (
               <button
                 type="button"
-                onClick={() => { setSelectedImage(null); setSelectedVideo(null); }}
+                onClick={() => {
+                  releasePreparedMediaSource(selectedVideo?.preparedSource);
+                  setSelectedImage(null);
+                  setSelectedVideo(null);
+                }}
                 className="px-2.5 py-1.5 bg-slate-200 dark:bg-slate-700 hover:bg-rose-100 dark:hover:bg-rose-950/60 text-slate-600 dark:text-slate-300 hover:text-rose-600 dark:hover:text-rose-400 rounded-xl text-xs font-semibold transition-colors shrink-0 flex items-center gap-1 cursor-pointer min-h-[36px]"
                 title="Cancel attachment"
               >
@@ -1673,7 +1711,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (file) {
-                  if (file.type.startsWith('video/')) processAndSetVideoFile(file);
+                  if (isSupportedVideoFile(file, file.name)) processAndSetVideoFile(file);
                   else processAndSetImageFile(file);
                 }
               }}

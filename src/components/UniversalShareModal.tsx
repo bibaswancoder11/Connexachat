@@ -17,7 +17,13 @@ import {
 import { UserProfile, ChatRoom } from '../types';
 import { isUserBlockedLocally } from '../services/blockService';
 import { getOrCreateChat, sendMessage } from '../services/chatService';
-import { uploadLargeMedia, MAX_VIDEO_SIZE_BYTES, MAX_VIDEO_SIZE_MB } from '../services/mediaStorageService';
+import {
+  uploadLargeMedia,
+  MAX_VIDEO_SIZE_BYTES,
+  MAX_VIDEO_SIZE_MB,
+  PreparedMediaSource,
+  releasePreparedMediaSource
+} from '../services/mediaStorageService';
 import { EmojiPickerPopup } from './EmojiPickerPopup';
 import { getDomainFromUrl, normalizeUrl } from '../utils/urlUtils';
 
@@ -25,6 +31,7 @@ export interface UniversalShareItem {
   type: 'image' | 'video' | 'file';
   dataUrl: string;
   file?: File | Blob;
+  preparedSource?: PreparedMediaSource;
   filename?: string;
   size?: number;
   mimeType?: string;
@@ -129,16 +136,23 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
     setUploadProgress(null);
   }, [payload]);
 
+  const handleCancelAndCleanup = () => {
+    if (isSending) return;
+    payload.items?.forEach(item => releasePreparedMediaSource(item.preparedSource));
+    onClose();
+  };
+
   // Support Escape key to cancel
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !isSending) {
+        payload.items?.forEach(item => releasePreparedMediaSource(item.preparedSource));
         onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [onClose, isSending]);
+  }, [onClose, isSending, payload]);
 
   // Build WhatsApp-style categorized recipients list (Accepted Friends & Active Groups ONLY)
   const allRecipients = useMemo(() => {
@@ -264,7 +278,7 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
           setErrorMessage(item.error);
           return;
         }
-        const itemBytes = item.file?.size ?? item.size ?? 0;
+        const itemBytes = item.preparedSource?.size ?? item.file?.size ?? item.size ?? 0;
         if (itemBytes > MAX_VIDEO_SIZE_BYTES) {
           setErrorMessage(
             `${item.type === 'video' ? 'Video' : 'File'} is too large (${(itemBytes / (1024 * 1024)).toFixed(1)}MB). Maximum supported size is ${MAX_VIDEO_SIZE_MB}MB.`
@@ -288,6 +302,7 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
         for (let idx = 0; idx < preparedItems.length; idx++) {
           const rawItem = preparedItems[idx];
           const resolvedUrl = await uploadLargeMedia({
+            preparedSource: rawItem.preparedSource,
             blob: rawItem.file,
             dataUrl: rawItem.dataUrl,
             mimeType: rawItem.mimeType,
@@ -298,10 +313,15 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
               setUploadProgress(overall);
             }
           });
+          releasePreparedMediaSource(rawItem.preparedSource);
+          rawItem.dataUrl = resolvedUrl;
+          rawItem.file = undefined;
+          rawItem.preparedSource = undefined;
           uploadedList.push({
             ...rawItem,
             dataUrl: resolvedUrl,
-            file: undefined
+            file: undefined,
+            preparedSource: undefined
           });
         }
         preparedItems = uploadedList;
@@ -453,7 +473,7 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
             <button
               type="button"
               disabled={isSending}
-              onClick={onClose}
+              onClick={handleCancelAndCleanup}
               className="p-2 -ml-1 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
               title="Back"
             >
@@ -474,7 +494,7 @@ export const UniversalShareModal: React.FC<UniversalShareModalProps> = ({
           <button
             type="button"
             disabled={isSending}
-            onClick={onClose}
+            onClick={handleCancelAndCleanup}
             className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition-colors cursor-pointer"
             title="Cancel"
           >
