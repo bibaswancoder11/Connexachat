@@ -4,7 +4,7 @@ import { extractUrlsFromText } from '../utils/urlUtils';
 
 export interface ToastNotificationData {
   id: string;
-  type: 'message' | 'request' | 'friend_accepted';
+  type: 'message' | 'request' | 'friend_accepted' | 'system';
   title: string;
   body: string;
   avatar?: string;
@@ -38,18 +38,23 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({ toast, onC
     if (toast.type === 'friend_accepted') {
       return <UserCheck className="w-2.5 h-2.5 text-white" />;
     }
+    if (toast.type === 'system') {
+      return <Bell className="w-2.5 h-2.5 text-white" />;
+    }
     return <Users className="w-2.5 h-2.5 text-white" />;
   };
 
   const getBadgeBg = () => {
     if (toast.type === 'message') return 'bg-blue-600';
     if (toast.type === 'friend_accepted') return 'bg-emerald-600';
+    if (toast.type === 'system') return 'bg-slate-700';
     return 'bg-indigo-600';
   };
 
   const getCategoryLabel = () => {
     if (toast.type === 'message') return 'New Message';
     if (toast.type === 'friend_accepted') return 'Friend Request Accepted 🎉';
+    if (toast.type === 'system') return 'Connexa Notice';
     return 'Friend Request';
   };
 
@@ -57,6 +62,7 @@ export const NotificationToast: React.FC<NotificationToastProps> = ({ toast, onC
     if (toast.actionLabel) return toast.actionLabel;
     if (toast.type === 'message') return 'Open Chat';
     if (toast.type === 'friend_accepted') return 'Start Chatting';
+    if (toast.type === 'system') return 'Open';
     return 'View Requests';
   };
 

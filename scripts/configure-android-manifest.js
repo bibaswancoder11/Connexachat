@@ -57,15 +57,21 @@ featuresToAdd.forEach(feat => {
   }
 });
 
-// 3. Application Attributes (requestLegacyExternalStorage, usesCleartextTraffic)
+// 3. Application & MainActivity Attributes (ensure exported="true" and singleTask so Share Sheet intents always work)
 if (!content.includes('android:requestLegacyExternalStorage="true"')) {
   content = content.replace('<application', '<application android:requestLegacyExternalStorage="true"');
 }
 
-// 4. Intent Filters for Android Native Share Sheet Target (Links, Text, Photos, Videos, Documents, Any File)
+if (content.includes('android:exported="false"')) {
+  content = content.replace('android:exported="false"', 'android:exported="true"');
+} else if (!content.includes('android:exported="true"')) {
+  content = content.replace('<activity', '<activity android:exported="true"');
+}
+
+// 4. Intent Filters for Android Native Share Sheet Target (Links, Text, Photos, Videos, Documents, PDFs, Audio, Any File)
 const shareIntentFilter = `
             <!-- Native Android Share Sheet Target (WhatsApp Style - Links, Documents, Photos, Videos, Audio, Any File) -->
-            <intent-filter>
+            <intent-filter android:label="Connexa">
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
@@ -73,15 +79,17 @@ const shareIntentFilter = `
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
                 <data android:mimeType="audio/*" />
+                <data android:mimeType="application/pdf" />
                 <data android:mimeType="application/*" />
                 <data android:mimeType="*/*" />
             </intent-filter>
-            <intent-filter>
+            <intent-filter android:label="Connexa">
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
                 <data android:mimeType="video/*" />
                 <data android:mimeType="audio/*" />
+                <data android:mimeType="application/pdf" />
                 <data android:mimeType="application/*" />
                 <data android:mimeType="*/*" />
             </intent-filter>
@@ -92,8 +100,12 @@ const shareIntentFilter = `
                 <data android:scheme="connexa" />
             </intent-filter>`;
 
-if (!content.includes('android.intent.action.SEND_MULTIPLE') || !content.includes('android:mimeType="application/*"')) {
-  // Replace old or insert new
+if (!content.includes('android.intent.action.SEND_MULTIPLE') || !content.includes('android:mimeType="application/pdf"')) {
+  // Remove previous share intent filter block if upgrading
+  content = content.replace(
+    /\s*<!-- Native Android Share Sheet Target[\s\S]*?<data android:scheme="connexa" \/>\s*<\/intent-filter>/,
+    ''
+  );
   content = content.replace(
     '</activity>',
     `${shareIntentFilter}\n        </activity>`
@@ -118,9 +130,9 @@ if (!content.includes('com.google.firebase.messaging.default_notification_channe
 }
 
 fs.writeFileSync(manifestPath, content, 'utf8');
-console.log('✅ AndroidManifest.xml successfully configured with media permissions, features, FCM push metadata, and universal native share sheet intent filters!');
+console.log('✅ AndroidManifest.xml configured with exported MainActivity, media permissions, FCM metadata, and universal share sheet filters!');
 
-// 6. Configure MainActivity.java to intercept ACTION_SEND and ACTION_SEND_MULTIPLE intents (Links, Files, Media, Text)
+// 6. Configure MainActivity.java with @JavascriptInterface Bridge + Async Stream/ClipData Reader
 function findMainActivity(dir) {
   if (!fs.existsSync(dir)) return null;
   const files = fs.readdirSync(dir);
@@ -140,31 +152,59 @@ const javaDir = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'java'
 const mainActivityPath = findMainActivity(javaDir);
 
 if (mainActivityPath && fs.existsSync(mainActivityPath)) {
-  let mainContent = fs.readFileSync(mainActivityPath, 'utf8');
-  if (!mainContent.includes('handleUniversalShareIntent')) {
-    // Add required imports
-    const requiredImports = `import com.getcapacitor.BridgeActivity;
+  const existingMain = fs.readFileSync(mainActivityPath, 'utf8');
+  const pkgMatch = existingMain.match(/package\s+([a-zA-Z0-9_.]+)\s*;/);
+  const packageName = pkgMatch ? pkgMatch[1] : 'com.connexa.messenger';
+
+  if (!existingMain.includes('ConnexaAndroidShare')) {
+    const updatedMainActivityJava = `package ${packageName};
+
+import com.getcapacitor.BridgeActivity;
+import android.content.ClipData;
 import android.content.Intent;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
-import android.util.Base64;
-import android.database.Cursor;
 import android.provider.OpenableColumns;
-import org.json.JSONObject;
+import android.util.Base64;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebView;
 import org.json.JSONArray;
-import java.io.InputStream;
+import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
-import java.util.ArrayList;`;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-    mainContent = mainContent.replace(
-      'import com.getcapacitor.BridgeActivity;',
-      requiredImports
-    );
+public class MainActivity extends BridgeActivity {
 
-    const shareHandlingMethods = `
+    private volatile String pendingSharedPayloadJson = null;
+    private final ExecutorService shareExecutor = Executors.newSingleThreadExecutor();
+
+    public class ConnexaShareBridge {
+        @JavascriptInterface
+        public boolean hasPendingShare() {
+            return pendingSharedPayloadJson != null && !pendingSharedPayloadJson.isEmpty();
+        }
+
+        @JavascriptInterface
+        public String consumePendingShare() {
+            String payload = pendingSharedPayloadJson;
+            pendingSharedPayloadJson = null;
+            return payload;
+        }
+    }
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            WebView webView = this.bridge.getWebView();
+            webView.addJavascriptInterface(new ConnexaShareBridge(), "ConnexaAndroidShare");
+        }
         handleUniversalShareIntent(getIntent());
     }
 
@@ -175,128 +215,174 @@ import java.util.ArrayList;`;
         handleUniversalShareIntent(intent);
     }
 
-    private void handleUniversalShareIntent(Intent intent) {
+    private void handleUniversalShareIntent(final Intent intent) {
         if (intent == null) return;
-        String action = intent.getAction();
-        String type = intent.getType();
+        final String action = intent.getAction();
+        final String type = intent.getType() != null ? intent.getType() : "*/*";
 
-        if (Intent.ACTION_SEND.equals(action) && type != null) {
-            handleSingleShare(intent, type);
-        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action) && type != null) {
-            handleMultipleShare(intent, type);
+        if (!Intent.ACTION_SEND.equals(action) && !Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            return;
         }
-    }
 
-    private void handleSingleShare(Intent intent, String type) {
-        try {
-            Uri streamUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            String sharedTitle = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+        // Collect all shared URIs from both EXTRA_STREAM and ClipData (modern Android apps use either or both)
+        final Set<Uri> uriSet = new LinkedHashSet<>();
 
-            JSONObject payload = new JSONObject();
-            payload.put("source", "android-share-sheet");
-
-            if (streamUri != null) {
-                // File/Media shared via EXTRA_STREAM
-                JSONObject item = uriToShareItem(streamUri, type);
-                if (item != null) {
-                    JSONArray items = new JSONArray();
-                    items.put(item);
-                    payload.put("items", items);
-                    payload.put("type", type.startsWith("image/") || type.startsWith("video/") ? "media" : "file");
-                    payload.put("caption", sharedText != null ? sharedText : "");
-                    payload.put("text", sharedText != null ? sharedText : "");
-                    passPayloadToWebView(payload);
-                    return;
+        if (Intent.ACTION_SEND.equals(action)) {
+            Uri singleUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (singleUri != null) {
+                uriSet.add(singleUri);
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Uri> multiUris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+            if (multiUris != null) {
+                for (Uri u : multiUris) {
+                    if (u != null) uriSet.add(u);
                 }
             }
-
-            // Text or URL only
-            if (sharedText != null && !sharedText.isEmpty()) {
-                payload.put("text", sharedText);
-                payload.put("caption", sharedText);
-                if (sharedTitle != null) payload.put("title", sharedTitle);
-
-                // Detect if it is a link
-                if (sharedText.contains("http://") || sharedText.contains("https://")) {
-                    payload.put("type", "link");
-                    payload.put("url", extractUrlFromText(sharedText));
-                } else {
-                    payload.put("type", "text");
-                }
-                passPayloadToWebView(payload);
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
         }
-    }
 
-    private void handleMultipleShare(Intent intent, String type) {
-        try {
-            ArrayList<Uri> uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
-            String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
-            if (uris != null && !uris.isEmpty()) {
+        ClipData clipData = intent.getClipData();
+        if (clipData != null) {
+            for (int i = 0; i < clipData.getItemCount(); i++) {
+                ClipData.Item clipItem = clipData.getItemAt(i);
+                if (clipItem != null && clipItem.getUri() != null) {
+                    uriSet.add(clipItem.getUri());
+                }
+            }
+        }
+
+        final String sharedText = intent.getStringExtra(Intent.EXTRA_TEXT);
+        final String sharedTitle = intent.getStringExtra(Intent.EXTRA_SUBJECT);
+
+        // Reset intent action immediately so screen rotation or app resume never re-fires an already handled share
+        intent.setAction(Intent.ACTION_MAIN);
+        intent.removeExtra(Intent.EXTRA_STREAM);
+        intent.removeExtra(Intent.EXTRA_TEXT);
+        intent.setClipData(null);
+
+        // Process file streams asynchronously on background thread so large videos/PDFs never freeze UI
+        shareExecutor.execute(() -> {
+            try {
                 JSONObject payload = new JSONObject();
                 payload.put("source", "android-share-sheet");
-                payload.put("type", type.startsWith("image/") || type.startsWith("video/") ? "media" : "file");
-                payload.put("caption", sharedText != null ? sharedText : "");
-                payload.put("text", sharedText != null ? sharedText : "");
-
-                JSONArray items = new JSONArray();
-                for (Uri u : uris) {
-                    JSONObject item = uriToShareItem(u, type);
-                    if (item != null) items.put(item);
+                if (sharedTitle != null && !sharedTitle.trim().isEmpty()) {
+                    payload.put("title", sharedTitle.trim());
                 }
-                payload.put("items", items);
-                passPayloadToWebView(payload);
+
+                if (!uriSet.isEmpty()) {
+                    JSONArray items = new JSONArray();
+                    boolean allFilesAreDocs = true;
+
+                    for (Uri u : uriSet) {
+                        JSONObject item = uriToShareItem(u, type);
+                        if (item != null) {
+                            String itemType = item.optString("type", "file");
+                            if ("image".equals(itemType) || "video".equals(itemType)) {
+                                allFilesAreDocs = false;
+                            }
+                            items.put(item);
+                        }
+                    }
+
+                    if (items.length() > 0) {
+                        payload.put("items", items);
+                        payload.put("type", allFilesAreDocs ? "file" : "media");
+                        String cleanCaption = sharedText != null ? sharedText.trim() : "";
+                        payload.put("caption", cleanCaption);
+                        payload.put("text", cleanCaption);
+                        deliverPayloadToWebView(payload);
+                        return;
+                    }
+                }
+
+                // Link or Text share (e.g., Chrome, YouTube, Instagram, Notes)
+                if (sharedText != null && !sharedText.trim().isEmpty()) {
+                    String trimmed = sharedText.trim();
+                    String extractedUrl = extractUrlFromText(trimmed);
+
+                    if (!extractedUrl.isEmpty()) {
+                        payload.put("type", "link");
+                        payload.put("url", extractedUrl);
+                        String remainingCaption = trimmed.replace(extractedUrl, "").trim();
+                        payload.put("caption", remainingCaption);
+                        payload.put("text", remainingCaption);
+                    } else {
+                        payload.put("type", "text");
+                        payload.put("caption", trimmed);
+                        payload.put("text", trimmed);
+                    }
+                    deliverPayloadToWebView(payload);
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
             }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        });
     }
 
-    private JSONObject uriToShareItem(Uri uri, String mimeType) {
+    private JSONObject uriToShareItem(Uri uri, String fallbackMimeType) {
         try {
             String filename = "shared_file";
             long size = 0;
 
             Cursor cursor = getContentResolver().query(uri, null, null, null, null);
             if (cursor != null) {
-                int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (cursor.moveToFirst()) {
-                    if (nameIndex != -1) filename = cursor.getString(nameIndex);
-                    if (sizeIndex != -1) size = cursor.getLong(sizeIndex);
+                try {
+                    int nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                    int sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE);
+                    if (cursor.moveToFirst()) {
+                        if (nameIndex != -1 && cursor.getString(nameIndex) != null) {
+                            filename = cursor.getString(nameIndex);
+                        }
+                        if (sizeIndex != -1) {
+                            size = cursor.getLong(sizeIndex);
+                        }
+                    }
+                } finally {
+                    cursor.close();
                 }
-                cursor.close();
             }
 
-            // Determine specific mime type if generic
             String actualMime = getContentResolver().getType(uri);
-            if (actualMime == null) actualMime = mimeType;
-
-            String itemType = "file";
-            if (actualMime != null) {
-                if (actualMime.startsWith("image/")) itemType = "image";
-                else if (actualMime.startsWith("video/")) itemType = "video";
+            if (actualMime == null || actualMime.equals("*/*")) {
+                actualMime = fallbackMimeType;
+            }
+            if (actualMime == null || actualMime.equals("*/*")) {
+                actualMime = guessMimeFromFilename(filename);
             }
 
-            // Read file into Base64 Data URL (for files up to 25MB)
+            String lowerMime = actualMime.toLowerCase();
+            String lowerName = filename.toLowerCase();
+            String itemType = "file";
+            if (lowerMime.startsWith("image/") || lowerName.matches(".*\\\\.(jpg|jpeg|png|gif|webp|bmp|heic|svg)$")) {
+                itemType = "image";
+            } else if (lowerMime.startsWith("video/") || lowerName.matches(".*\\\\.(mp4|webm|mov|mkv|avi|m4v|3gp)$")) {
+                itemType = "video";
+            }
+
             InputStream is = getContentResolver().openInputStream(uri);
             if (is == null) return null;
 
             ByteArrayOutputStream buffer = new ByteArrayOutputStream();
             int nRead;
-            byte[] data = new byte[16384];
-            while ((nRead = is.read(data, 0, data.length)) != -1) {
-                buffer.write(data, 0, nRead);
+            byte[] data = new byte[32768];
+            long totalRead = 0;
+            final long MAX_BYTES = 35L * 1024L * 1024L; // 35 MB safety cap
+            try {
+                while ((nRead = is.read(data, 0, data.length)) != -1) {
+                    totalRead += nRead;
+                    if (totalRead > MAX_BYTES) {
+                        break;
+                    }
+                    buffer.write(data, 0, nRead);
+                }
+                buffer.flush();
+            } finally {
+                is.close();
             }
-            buffer.flush();
-            byte[] fileBytes = buffer.toByteArray();
-            is.close();
 
+            byte[] fileBytes = buffer.toByteArray();
             String base64Data = Base64.encodeToString(fileBytes, Base64.NO_WRAP);
-            String dataUrl = "data:" + (actualMime != null ? actualMime : "application/octet-stream") + ";base64," + base64Data;
+            String dataUrl = "data:" + actualMime + ";base64," + base64Data;
 
             JSONObject obj = new JSONObject();
             obj.put("type", itemType);
@@ -311,42 +397,65 @@ import java.util.ArrayList;`;
         }
     }
 
+    private String guessMimeFromFilename(String filename) {
+        if (filename == null) return "application/octet-stream";
+        String lower = filename.toLowerCase();
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".doc")) return "application/msword";
+        if (lower.endsWith(".docx")) return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
+        if (lower.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+        if (lower.endsWith(".pptx")) return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        if (lower.endsWith(".zip")) return "application/zip";
+        if (lower.endsWith(".txt")) return "text/plain";
+        if (lower.endsWith(".csv")) return "text/csv";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".wav")) return "audio/wav";
+        if (lower.endsWith(".m4a")) return "audio/mp4";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".webp")) return "image/webp";
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        return "application/octet-stream";
+    }
+
     private String extractUrlFromText(String text) {
         if (text == null) return "";
-        int start = text.indexOf("http://");
-        if (start == -1) start = text.indexOf("https://");
-        if (start == -1) return text;
-        int end = text.indexOf(" ", start);
-        if (end == -1) end = text.indexOf("\\n", start);
-        if (end == -1) return text.substring(start);
+        int start = text.indexOf("https://");
+        if (start == -1) start = text.indexOf("http://");
+        if (start == -1) return "";
+        int end = start;
+        while (end < text.length() && !Character.isWhitespace(text.charAt(end))) {
+            end++;
+        }
         return text.substring(start, end);
     }
 
-    private void passPayloadToWebView(JSONObject payload) {
-        try {
-            String jsonStr = payload.toString();
-            String js = "(function(){ " +
-                "try { localStorage.setItem('connexa_pending_universal_share', JSON.stringify(" + jsonStr + ")); } catch(e){} " +
-                "window.dispatchEvent(new CustomEvent('connexa:universal-share', { detail: " + jsonStr + " })); " +
-                "})();";
-
-            if (this.bridge != null && this.bridge.getWebView() != null) {
-                this.bridge.getWebView().post(() -> {
-                    this.bridge.getWebView().evaluateJavascript(js, null);
-                });
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+    private void deliverPayloadToWebView(JSONObject payload) {
+        pendingSharedPayloadJson = payload.toString();
+        notifyWebViewBridgeReady(0);
+        notifyWebViewBridgeReady(400);
+        notifyWebViewBridgeReady(1200);
+        notifyWebViewBridgeReady(2500);
     }
+
+    private void notifyWebViewBridgeReady(long delayMs) {
+        if (this.bridge == null || this.bridge.getWebView() == null) return;
+        final WebView webView = this.bridge.getWebView();
+        webView.postDelayed(() -> {
+            if (pendingSharedPayloadJson != null) {
+                webView.evaluateJavascript(
+                    "window.dispatchEvent(new CustomEvent('connexa:native-share-ready'));",
+                    null
+                );
+            }
+        }, delayMs);
+    }
+}
 `;
 
-    mainContent = mainContent.replace(
-      /public class MainActivity extends BridgeActivity\s*\{/,
-      `public class MainActivity extends BridgeActivity {\n${shareHandlingMethods}`
-    );
-
-    fs.writeFileSync(mainActivityPath, mainContent, 'utf8');
-    console.log('✅ MainActivity.java successfully configured with universal native ACTION_SEND and ACTION_SEND_MULTIPLE intent handlers!');
+    fs.writeFileSync(mainActivityPath, updatedMainActivityJava, 'utf8');
+    console.log('✅ MainActivity.java configured with ConnexaAndroidShare @JavascriptInterface bridge & async ClipData/Stream share handler!');
   }
 }

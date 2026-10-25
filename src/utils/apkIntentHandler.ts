@@ -1,7 +1,8 @@
 /**
  * APK & Web Share Target Intent Handler for Connexa
- * Handles incoming shared items (links, documents, photos, videos, text) from Android native share sheet,
- * Web Share Target API, or file drag-and-drop.
+ * Handles incoming shared items (links, documents, photos, videos, audio, text)
+ * from Android native share sheet (IntentResolver), Web Share Target API (PWA), or in-app triggers,
+ * routing every shared item to the unified WhatsApp-style UniversalShareModal.
  */
 
 import { SharedMediaItem } from '../components/ShareMediaModal';
@@ -25,7 +26,7 @@ export interface SharedLinkPayload {
   source?: 'android-share-sheet' | 'web-share-target' | 'query-param' | 'in-app';
 }
 
-// 1. Universal Share Listener (WhatsApp-Style Unified Share Target)
+// Unified WhatsApp-Style Share Listener
 type UniversalShareListener = (payload: UniversalSharePayload) => void;
 const universalListeners: Set<UniversalShareListener> = new Set();
 let pendingUniversalPayload: UniversalSharePayload | null = null;
@@ -33,100 +34,97 @@ let pendingUniversalPayload: UniversalSharePayload | null = null;
 export function subscribeToUniversalShareIntents(listener: UniversalShareListener): () => void {
   universalListeners.add(listener);
   if (pendingUniversalPayload) {
-    listener(pendingUniversalPayload);
+    const queued = pendingUniversalPayload;
     pendingUniversalPayload = null;
+    listener(queued);
   }
   return () => {
     universalListeners.delete(listener);
   };
 }
 
-export function notifyUniversalShareIntent(payload: UniversalSharePayload) {
+/**
+ * Normalize any incoming share payload so:
+ * - Links don't repeat the raw URL inside the optional caption
+ * - Media (images/videos) vs Documents/Files are accurately typed
+ */
+function normalizeUniversalPayload(payload: UniversalSharePayload): UniversalSharePayload {
+  const normalized: UniversalSharePayload = { ...payload };
+
+  // If items exist, determine whether they are visual media (image/video) or documents/files
+  if (normalized.items && normalized.items.length > 0) {
+    const allVisualMedia = normalized.items.every(i => i.type === 'image' || i.type === 'video');
+    normalized.type = allVisualMedia ? 'media' : (normalized.items.some(i => i.type === 'file') && !normalized.items.some(i => i.type === 'image' || i.type === 'video') ? 'file' : normalized.type === 'file' ? 'file' : 'media');
+
+    // Clean caption if it only echoes nothing
+    if (normalized.caption === undefined && normalized.text) {
+      normalized.caption = normalized.text;
+    }
+    return normalized;
+  }
+
+  // If text contains a URL and url wasn't separated yet, extract it cleanly
+  const rawText = normalized.text || normalized.caption || '';
+  if (!normalized.url && rawText) {
+    const extracted = extractUrlAndCaption(rawText);
+    if (extracted) {
+      normalized.type = 'link';
+      normalized.url = extracted.url;
+      normalized.caption = extracted.caption;
+      normalized.text = extracted.caption;
+      return normalized;
+    }
+  }
+
+  // If it's a link, strip the URL out of caption so the optional caption box starts clean
+  if (normalized.type === 'link' && normalized.url) {
+    const cleanCap = (normalized.caption ?? normalized.text ?? '')
+      .replace(normalized.url, '')
+      .trim();
+    normalized.caption = cleanCap;
+    normalized.text = cleanCap;
+  }
+
+  return normalized;
+}
+
+export function notifyUniversalShareIntent(rawPayload: UniversalSharePayload) {
+  const payload = normalizeUniversalPayload(rawPayload);
   if (universalListeners.size === 0) {
     pendingUniversalPayload = payload;
   } else {
     universalListeners.forEach(l => l(payload));
   }
-
-  // Also bridge to legacy listeners for backward compatibility
-  if (payload.type === 'link' && payload.url) {
-    legacyNotifyLinkShare({
-      url: payload.url,
-      title: payload.title,
-      text: payload.caption || payload.text,
-      source: (payload.source as any) || 'android-share-sheet'
-    });
-  } else if ((payload.type === 'media' || payload.type === 'file') && payload.items) {
-    legacyNotifyMediaShare({
-      items: payload.items as any,
-      text: payload.caption || payload.text,
-      source: (payload.source as any) || 'android-share-sheet'
-    });
-  }
 }
 
-// 2. Legacy Media Listeners
-type ShareIntentListener = (payload: PendingSharePayload) => void;
-const listeners: Set<ShareIntentListener> = new Set();
-let pendingPayload: PendingSharePayload | null = null;
-
-export function subscribeToShareIntents(listener: ShareIntentListener): () => void {
-  listeners.add(listener);
-  if (pendingPayload) {
-    listener(pendingPayload);
-    pendingPayload = null;
-  }
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-function legacyNotifyMediaShare(payload: PendingSharePayload) {
-  if (listeners.size === 0) {
-    pendingPayload = payload;
-  } else {
-    listeners.forEach(l => l(payload));
-  }
+// Legacy adapters — route straight into UniversalShareModal (never open duplicate modals)
+export function subscribeToShareIntents(_listener: (payload: PendingSharePayload) => void): () => void {
+  return () => {};
 }
 
 export function notifyShareIntent(payload: PendingSharePayload) {
-  legacyNotifyMediaShare(payload);
-  const isVideo = payload.items.some(i => i.type === 'video');
+  const items: UniversalShareItem[] = (payload.items || []).map(item => ({
+    type: item.type,
+    dataUrl: item.dataUrl,
+    thumbnailUrl: item.thumbnailUrl,
+    duration: item.duration,
+    filename: item.filename,
+    size: 'size' in item && typeof (item as { size?: number }).size === 'number' ? (item as { size?: number }).size : undefined
+  }));
   notifyUniversalShareIntent({
-    type: isVideo || payload.items.length > 0 ? 'media' : 'text',
-    items: payload.items as any,
+    type: items.length > 0 ? 'media' : 'text',
+    items,
     caption: payload.text,
     text: payload.text,
     source: payload.source
   });
 }
 
-// 3. Legacy Link Listeners
-type LinkShareIntentListener = (payload: SharedLinkPayload) => void;
-const linkListeners: Set<LinkShareIntentListener> = new Set();
-let pendingLinkPayload: SharedLinkPayload | null = null;
-
-export function subscribeToLinkShareIntents(listener: LinkShareIntentListener): () => void {
-  linkListeners.add(listener);
-  if (pendingLinkPayload) {
-    listener(pendingLinkPayload);
-    pendingLinkPayload = null;
-  }
-  return () => {
-    linkListeners.delete(listener);
-  };
-}
-
-function legacyNotifyLinkShare(payload: SharedLinkPayload) {
-  if (linkListeners.size === 0) {
-    pendingLinkPayload = payload;
-  } else {
-    linkListeners.forEach(l => l(payload));
-  }
+export function subscribeToLinkShareIntents(_listener: (payload: SharedLinkPayload) => void): () => void {
+  return () => {};
 }
 
 export function notifyLinkShareIntent(payload: SharedLinkPayload) {
-  legacyNotifyLinkShare(payload);
   notifyUniversalShareIntent({
     type: 'link',
     url: payload.url,
@@ -152,46 +150,83 @@ export function extractUrlAndCaption(rawText: string): { url: string; caption: s
 }
 
 /**
- * Handle incoming files (photos, videos, documents/PDFs, audio)
+ * Infer whether a File is an image, video, or general document/file
+ */
+function classifyFileCategory(file: File): 'image' | 'video' | 'file' {
+  const mime = (file.type || '').toLowerCase();
+  const name = (file.name || '').toLowerCase();
+
+  if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg)$/.test(name)) {
+    return 'image';
+  }
+  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|3gp|m4v)$/.test(name)) {
+    return 'video';
+  }
+  return 'file';
+}
+
+/**
+ * Handle incoming files (photos, videos, PDFs, Office docs, archives, audio, any file)
  */
 export async function processIncomingFilesForSharing(files: FileList | File[]): Promise<UniversalShareItem[]> {
   const items: UniversalShareItem[] = [];
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
+    if (!file || file.size === 0) continue;
+
+    const category = classifyFileCategory(file);
     try {
-      if (file.type.startsWith('image/')) {
-        const compressed = await compressImage(file, { maxWidth: 1200, maxHeight: 1200, quality: 0.82 });
-        items.push({
-          type: 'image',
-          dataUrl: compressed,
-          filename: file.name,
-          size: file.size,
-          mimeType: file.type
-        });
-      } else if (file.type.startsWith('video/')) {
-        const meta = await processVideoFile(file);
-        items.push({
-          type: 'video',
-          dataUrl: meta.dataUrl,
-          thumbnailUrl: meta.thumbnailUrl,
-          duration: meta.duration,
-          filename: file.name,
-          size: file.size,
-          mimeType: file.type
-        });
+      if (category === 'image') {
+        try {
+          const compressed = await compressImage(file, { maxWidth: 1280, maxHeight: 1280, quality: 0.84 });
+          items.push({
+            type: 'image',
+            dataUrl: compressed,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type || 'image/jpeg'
+          });
+        } catch {
+          // Fallback to raw DataURL if SVG/HEIC canvas compression fails
+          const rawDataUrl = await readFileAsDataUrl(file);
+          items.push({
+            type: 'image',
+            dataUrl: rawDataUrl,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type || 'image/png'
+          });
+        }
+      } else if (category === 'video') {
+        try {
+          const meta = await processVideoFile(file);
+          items.push({
+            type: 'video',
+            dataUrl: meta.dataUrl,
+            thumbnailUrl: meta.thumbnailUrl,
+            duration: meta.duration,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type || 'video/mp4'
+          });
+        } catch {
+          const rawDataUrl = await readFileAsDataUrl(file);
+          items.push({
+            type: 'video',
+            dataUrl: rawDataUrl,
+            filename: file.name,
+            size: file.size,
+            mimeType: file.type || 'video/mp4'
+          });
+        }
       } else {
         // Document / PDF / Audio / Archive / Any file
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(file);
-        });
+        const dataUrl = await readFileAsDataUrl(file);
         items.push({
           type: 'file',
           dataUrl,
-          filename: file.name,
+          filename: file.name || 'Document',
           size: file.size,
           mimeType: file.type || 'application/octet-stream'
         });
@@ -202,6 +237,15 @@ export async function processIncomingFilesForSharing(files: FileList | File[]): 
   }
 
   return items;
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
 }
 
 /**
@@ -226,11 +270,12 @@ function openShareDb(): Promise<IDBDatabase> {
  */
 export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
   id: string;
-  type: 'media' | 'link' | 'file';
+  type: 'media' | 'link' | 'file' | 'text';
   title?: string;
   text?: string;
   url?: string;
   files?: File[];
+  items?: UniversalShareItem[];
 } | null> {
   if (typeof window === 'undefined' || !('indexedDB' in window)) return null;
 
@@ -262,7 +307,7 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
           }
           records.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
           const newest = records[0];
-          const isFresh = Date.now() - (newest.timestamp || 0) < 180000; // 3 minutes
+          const isFresh = Date.now() - (newest.timestamp || 0) < 300000; // 5 minutes
           if (isFresh) {
             store.delete(newest.id);
             resolve(newest);
@@ -279,16 +324,47 @@ export async function fetchAndClearSharedRecord(shareId?: string): Promise<{
   }
 }
 
+/**
+ * Check Native Android JavascriptInterface Bridge (MainActivity.java -> ConnexaAndroidShare)
+ * Completely immune to cold-start WebView timing races and 5MB localStorage limits!
+ */
+export function checkNativeAndroidShareBridge(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const bridge = (window as any).ConnexaAndroidShare;
+    if (bridge && typeof bridge.hasPendingShare === 'function' && bridge.hasPendingShare()) {
+      const rawJson = bridge.consumePendingShare();
+      if (rawJson && typeof rawJson === 'string') {
+        const parsed = JSON.parse(rawJson);
+        if (parsed) {
+          notifyUniversalShareIntent(parsed);
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading ConnexaAndroidShare native bridge:', err);
+  }
+  return false;
+}
+
 let isInitialized = false;
+let isCheckingPending = false;
 
 /**
- * Process any pending share from Android intent, IndexedDB, or URL parameters
+ * Process any pending share from Native Android Bridge, localStorage, IndexedDB, or URL parameters
  */
 export async function checkPendingShareTargets() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || isCheckingPending) return;
+  isCheckingPending = true;
 
   try {
-    // 0. Check localStorage for universal share payload
+    // 1. Check Native Android JavascriptInterface Bridge first (highest priority, supports large files/videos/PDFs)
+    if (checkNativeAndroidShareBridge()) {
+      return;
+    }
+
+    // 2. Check localStorage for universal share payload
     const rawUniversal = localStorage.getItem('connexa_pending_universal_share');
     if (rawUniversal) {
       localStorage.removeItem('connexa_pending_universal_share');
@@ -303,7 +379,7 @@ export async function checkPendingShareTargets() {
       }
     }
 
-    // Check localStorage for link
+    // Check legacy localStorage keys
     const rawStored = localStorage.getItem('connexa_pending_share_link');
     if (rawStored) {
       localStorage.removeItem('connexa_pending_share_link');
@@ -313,20 +389,13 @@ export async function checkPendingShareTargets() {
       } catch {
         parsed = { text: rawStored };
       }
-      let url = parsed.url || '';
-      let text = parsed.text || '';
-      let title = parsed.title || '';
-      if (!url && text) {
-        const extracted = extractUrlAndCaption(text);
-        if (extracted) {
-          url = extracted.url;
-          text = extracted.caption;
-        }
-      }
-      if (url) {
+      const url = parsed?.url || '';
+      const text = parsed?.text || '';
+      const title = parsed?.title || '';
+      if (url || text) {
         notifyUniversalShareIntent({
-          type: 'link',
-          url,
+          type: url ? 'link' : 'text',
+          url: url || undefined,
           title: title || undefined,
           caption: text || undefined,
           text: text || undefined,
@@ -336,25 +405,23 @@ export async function checkPendingShareTargets() {
       }
     }
 
-    // Check localStorage for media
     const rawMediaStored = localStorage.getItem('connexa_pending_share_media');
     if (rawMediaStored) {
       localStorage.removeItem('connexa_pending_share_media');
-      let parsedMedia: any = null;
       try {
-        parsedMedia = JSON.parse(rawMediaStored);
+        const parsedMedia = JSON.parse(rawMediaStored);
+        if (parsedMedia && (Array.isArray(parsedMedia.items) || parsedMedia.text)) {
+          notifyUniversalShareIntent({
+            type: 'media',
+            items: parsedMedia.items || [],
+            caption: parsedMedia.text,
+            text: parsedMedia.text,
+            source: 'android-share-sheet'
+          });
+          return;
+        }
       } catch {
-        parsedMedia = null;
-      }
-      if (parsedMedia && (Array.isArray(parsedMedia.items) || parsedMedia.text)) {
-        notifyUniversalShareIntent({
-          type: 'media',
-          items: parsedMedia.items || [],
-          caption: parsedMedia.text,
-          text: parsedMedia.text,
-          source: 'android-share-sheet'
-        });
-        return;
+        // ignore
       }
     }
 
@@ -362,59 +429,74 @@ export async function checkPendingShareTargets() {
     const sharedId = params.get('shared_id');
     const shareIntent = params.get('share_intent');
 
-    // 1. Check IndexedDB if shared_id or share_intent exists
-    if (sharedId || shareIntent === 'media' || shareIntent === 'universal') {
-      const record = await fetchAndClearSharedRecord(sharedId || undefined);
-      if (record) {
-        if (record.files && record.files.length > 0) {
-          const items = await processIncomingFilesForSharing(record.files);
-          const hasImagesOrVideos = items.some(i => i.type === 'image' || i.type === 'video');
-          const finalType = hasImagesOrVideos ? 'media' : (items.some(i => i.type === 'file') ? 'file' : 'media');
+    // 3. Always check IndexedDB for fresh shared records (covers both ?shared_id=... and cold PWA launches)
+    const record = await fetchAndClearSharedRecord(sharedId || undefined);
+    if (record) {
+      cleanShareUrlParams();
 
-          if (items.length > 0 || record.text) {
-            notifyUniversalShareIntent({
-              type: finalType,
-              items,
-              caption: record.text,
-              text: record.text,
-              source: 'web-share-target'
-            });
-            return;
+      if (record.items && record.items.length > 0) {
+        const hasDoc = record.items.some(i => i.type === 'file') && !record.items.some(i => i.type === 'image' || i.type === 'video');
+        notifyUniversalShareIntent({
+          type: hasDoc ? 'file' : 'media',
+          items: record.items,
+          title: record.title,
+          caption: record.text,
+          text: record.text,
+          source: 'web-share-target'
+        });
+        return;
+      }
+
+      if (record.files && record.files.length > 0) {
+        const items = await processIncomingFilesForSharing(record.files);
+        const onlyDocs = items.length > 0 && items.every(i => i.type === 'file');
+        if (items.length > 0 || record.text) {
+          notifyUniversalShareIntent({
+            type: onlyDocs ? 'file' : 'media',
+            items,
+            title: record.title,
+            caption: record.text,
+            text: record.text,
+            source: 'web-share-target'
+          });
+          return;
+        }
+      }
+
+      if (record.url || record.text) {
+        let url = record.url || '';
+        let text = record.text || '';
+        if (!url && text) {
+          const extracted = extractUrlAndCaption(text);
+          if (extracted) {
+            url = extracted.url;
+            text = extracted.caption;
           }
-        } else if (record.url || record.text) {
-          let url = record.url || '';
-          let text = record.text || '';
-          if (!url && text) {
-            const extracted = extractUrlAndCaption(text);
-            if (extracted) {
-              url = extracted.url;
-              text = extracted.caption;
-            }
-          }
-          if (url) {
-            notifyUniversalShareIntent({
-              type: 'link',
-              url,
-              title: record.title,
-              caption: text,
-              text,
-              source: 'web-share-target'
-            });
-            return;
-          } else if (text) {
-            notifyUniversalShareIntent({
-              type: 'text',
-              caption: text,
-              text,
-              source: 'web-share-target'
-            });
-            return;
-          }
+        }
+        if (url) {
+          notifyUniversalShareIntent({
+            type: 'link',
+            url,
+            title: record.title,
+            caption: text,
+            text,
+            source: 'web-share-target'
+          });
+          return;
+        } else if (text) {
+          notifyUniversalShareIntent({
+            type: 'text',
+            title: record.title,
+            caption: text,
+            text,
+            source: 'web-share-target'
+          });
+          return;
         }
       }
     }
 
-    // 2. Check URL query parameters
+    // 4. Check URL query parameters (?shared_url=...&shared_text=...&shared_title=...)
     const sharedUrl = params.get('shared_url') || params.get('url') || params.get('link');
     const sharedText = params.get('shared_text') || params.get('text');
     const sharedTitle = params.get('shared_title') || params.get('title');
@@ -431,6 +513,8 @@ export async function checkPendingShareTargets() {
         }
       }
 
+      cleanShareUrlParams();
+
       if (finalUrl) {
         notifyUniversalShareIntent({
           type: 'link',
@@ -440,38 +524,61 @@ export async function checkPendingShareTargets() {
           text: finalText || undefined,
           source: 'query-param'
         });
+        return;
       } else if (finalText) {
         notifyUniversalShareIntent({
           type: 'text',
+          title: sharedTitle || undefined,
           caption: finalText,
           text: finalText,
           source: 'query-param'
         });
+        return;
       }
     }
 
-    // Clean URL parameters
-    if (sharedId || shareIntent || sharedUrl || sharedText || sharedTitle) {
-      const cleanUrl = new URL(window.location.href);
-      cleanUrl.searchParams.delete('shared_id');
-      cleanUrl.searchParams.delete('share_intent');
-      cleanUrl.searchParams.delete('shared_url');
-      cleanUrl.searchParams.delete('url');
-      cleanUrl.searchParams.delete('link');
-      cleanUrl.searchParams.delete('shared_text');
-      cleanUrl.searchParams.delete('text');
-      cleanUrl.searchParams.delete('shared_title');
-      cleanUrl.searchParams.delete('title');
-      const searchStr = cleanUrl.searchParams.toString();
-      window.history.replaceState({}, '', cleanUrl.pathname + (searchStr ? '?' + searchStr : ''));
+    if (sharedId || shareIntent) {
+      cleanShareUrlParams();
     }
   } catch (err) {
     console.warn('Error checking pending share targets:', err);
+  } finally {
+    isCheckingPending = false;
+  }
+}
+
+function cleanShareUrlParams() {
+  try {
+    const cleanUrl = new URL(window.location.href);
+    const keysToRemove = [
+      'shared_id',
+      'share_intent',
+      'shared_url',
+      'url',
+      'link',
+      'shared_text',
+      'text',
+      'shared_title',
+      'title'
+    ];
+    let changed = false;
+    for (const k of keysToRemove) {
+      if (cleanUrl.searchParams.has(k)) {
+        cleanUrl.searchParams.delete(k);
+        changed = true;
+      }
+    }
+    if (changed) {
+      const searchStr = cleanUrl.searchParams.toString();
+      window.history.replaceState({}, '', cleanUrl.pathname + (searchStr ? '?' + searchStr : ''));
+    }
+  } catch {
+    // ignore
   }
 }
 
 /**
- * Initialize listeners for Web Share Target & Android intents
+ * Initialize listeners for Native Android Share Sheet & Web Share Target API
  */
 export function initShareTargetListener() {
   if (typeof window === 'undefined') return;
@@ -481,8 +588,10 @@ export function initShareTargetListener() {
   }
   isInitialized = true;
 
-  // 1. Initial check on load
+  // 1. Initial check on load + staggered checks for cold-start Android WebView bridge readiness
   checkPendingShareTargets();
+  setTimeout(() => checkPendingShareTargets(), 350);
+  setTimeout(() => checkPendingShareTargets(), 1100);
 
   // 2. Re-check when window gains focus or becomes visible
   window.addEventListener('focus', () => {
@@ -495,26 +604,39 @@ export function initShareTargetListener() {
     }
   });
 
-  // 3. Listen for Service Worker postMessage
+  // 3. Listen for Native Android Bridge Ready signal from MainActivity.java
+  window.addEventListener('connexa:native-share-ready', () => {
+    checkNativeAndroidShareBridge();
+  });
+
+  // 4. Listen for Service Worker postMessage (when PWA is already open and receives a share)
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener('message', async (event) => {
       if (event.data?.type === 'WEB_SHARE_TARGET_MEDIA' || event.data?.type === 'WEB_SHARE_TARGET_FILE') {
-        const { files, text, shareId } = event.data;
+        const { files, text, title, shareId } = event.data;
+        // Clear IndexedDB copy so we don't process twice on next focus
+        if (shareId) {
+          fetchAndClearSharedRecord(shareId).catch(() => {});
+        }
         if (files && files.length > 0) {
           const items = await processIncomingFilesForSharing(files);
-          const hasImagesOrVideos = items.some(i => i.type === 'image' || i.type === 'video');
+          const onlyDocs = items.length > 0 && items.every(i => i.type === 'file');
           notifyUniversalShareIntent({
-            type: hasImagesOrVideos ? 'media' : 'file',
+            type: onlyDocs ? 'file' : 'media',
             items,
+            title,
             caption: text,
             text,
             source: 'web-share-target'
           });
-        } else if (shareId) {
+        } else {
           checkPendingShareTargets();
         }
       } else if (event.data?.type === 'WEB_SHARE_TARGET_LINK') {
         let { url, text, title, shareId } = event.data;
+        if (shareId) {
+          fetchAndClearSharedRecord(shareId).catch(() => {});
+        }
         if (!url && text) {
           const extracted = extractUrlAndCaption(text);
           if (extracted) {
@@ -531,17 +653,60 @@ export function initShareTargetListener() {
             text,
             source: 'web-share-target'
           });
-        } else if (shareId) {
+        } else if (text) {
+          notifyUniversalShareIntent({
+            type: 'text',
+            title,
+            caption: text,
+            text,
+            source: 'web-share-target'
+          });
+        } else {
           checkPendingShareTargets();
         }
       }
     });
   }
 
-  // 4. Native Android Capacitor App URL Open events
+  // 5. Web Launch Queue API (for File Handling / PWA Share Target launches)
+  if ('launchQueue' in window && (window as any).launchQueue?.setConsumer) {
+    try {
+      (window as any).launchQueue.setConsumer(async (launchParams: any) => {
+        if (launchParams?.files && launchParams.files.length > 0) {
+          const fileObjs: File[] = [];
+          for (const handle of launchParams.files) {
+            if (handle && typeof handle.getFile === 'function') {
+              const file = await handle.getFile();
+              if (file) fileObjs.push(file);
+            }
+          }
+          if (fileObjs.length > 0) {
+            const items = await processIncomingFilesForSharing(fileObjs);
+            const onlyDocs = items.every(i => i.type === 'file');
+            notifyUniversalShareIntent({
+              type: onlyDocs ? 'file' : 'media',
+              items,
+              source: 'web-share-target'
+            });
+          }
+        }
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  // 6. Native Android Capacitor App Lifecycle & Deep Link events
   if (Capacitor.isNativePlatform()) {
     try {
+      CapApp.addListener('appStateChange', ({ isActive }) => {
+        if (isActive) {
+          checkPendingShareTargets();
+        }
+      });
+
       CapApp.addListener('appUrlOpen', async (data) => {
+        if (checkNativeAndroidShareBridge()) return;
         if (!data?.url) return;
         try {
           const parsed = new URL(data.url);
@@ -550,34 +715,14 @@ export function initShareTargetListener() {
           const sharedTitle = parsed.searchParams.get('shared_title') || parsed.searchParams.get('title');
 
           if (sharedUrl || sharedText) {
-            let finalUrl = sharedUrl || '';
-            let finalText = sharedText || '';
-
-            if (!finalUrl && sharedText) {
-              const extracted = extractUrlAndCaption(sharedText);
-              if (extracted) {
-                finalUrl = extracted.url;
-                finalText = extracted.caption;
-              }
-            }
-
-            if (finalUrl) {
-              notifyUniversalShareIntent({
-                type: 'link',
-                url: finalUrl,
-                title: sharedTitle || undefined,
-                caption: finalText || undefined,
-                text: finalText || undefined,
-                source: 'android-share-sheet'
-              });
-            } else if (finalText) {
-              notifyUniversalShareIntent({
-                type: 'text',
-                caption: finalText,
-                text: finalText,
-                source: 'android-share-sheet'
-              });
-            }
+            notifyUniversalShareIntent({
+              type: sharedUrl ? 'link' : 'text',
+              url: sharedUrl || undefined,
+              title: sharedTitle || undefined,
+              caption: sharedText || undefined,
+              text: sharedText || undefined,
+              source: 'android-share-sheet'
+            });
           }
         } catch (e) {
           console.warn('Error parsing appUrlOpen data:', e);
@@ -588,9 +733,15 @@ export function initShareTargetListener() {
     }
   }
 
-  // 5. Custom DOM events for testing or programmatic triggering from Android WebView
+  // 7. Custom DOM events from Android WebView or in-app triggers
   window.addEventListener('connexa:universal-share', (e: any) => {
     if (e.detail) {
+      // Remove any duplicate localStorage copy if also written
+      try {
+        localStorage.removeItem('connexa_pending_universal_share');
+      } catch {
+        // ignore
+      }
       notifyUniversalShareIntent(e.detail);
     }
   });
@@ -599,8 +750,9 @@ export function initShareTargetListener() {
     if (e.detail?.files) {
       const items = await processIncomingFilesForSharing(e.detail.files);
       if (items.length > 0 || e.detail.text) {
+        const onlyDocs = items.length > 0 && items.every(i => i.type === 'file');
         notifyUniversalShareIntent({
-          type: 'media',
+          type: onlyDocs ? 'file' : 'media',
           items,
           caption: e.detail.text,
           text: e.detail.text,
@@ -611,30 +763,16 @@ export function initShareTargetListener() {
   });
 
   window.addEventListener('connexa:share-link', (e: any) => {
-    let url = e.detail?.url || '';
-    let text = e.detail?.text || '';
-    let title = e.detail?.title || '';
-    if (!url && text) {
-      const extracted = extractUrlAndCaption(text);
-      if (extracted) {
-        url = extracted.url;
-        text = extracted.caption;
-      }
-    }
-    if (url) {
+    const url = e.detail?.url || '';
+    const text = e.detail?.text || '';
+    const title = e.detail?.title || '';
+    if (url || text) {
       notifyUniversalShareIntent({
-        type: 'link',
-        url,
+        type: url ? 'link' : 'text',
+        url: url || undefined,
         title: title || undefined,
         caption: text || undefined,
         text: text || undefined,
-        source: 'android-share-sheet'
-      });
-    } else if (text) {
-      notifyUniversalShareIntent({
-        type: 'text',
-        caption: text,
-        text,
         source: 'android-share-sheet'
       });
     }

@@ -36,7 +36,8 @@ import {
   PhoneCall,
   Link as LinkIcon,
   Globe,
-  FileText
+  FileText,
+  UserPlus
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isUserOnline } from '../services/userService';
@@ -66,6 +67,7 @@ import {
   unblockUserLocally, 
   subscribeToBlockedUsers 
 } from '../services/blockService';
+import { sendFriendRequest } from '../services/friendService';
 import { GroupInfoModal } from './GroupInfoModal';
 import { EnlargeableAvatar } from './EnlargeableAvatar';
 import { VideoPlayerMessage } from './VideoPlayerMessage';
@@ -104,6 +106,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const { userProfile } = useAuth();
   const isGroup = chat.isGroup;
   const otherUser = chat.otherUser;
+  const isAcceptedFriend = isGroup || Boolean(otherUser && friends.some(f => f.uid === otherUser.uid));
+  const [friendRequestSent, setFriendRequestSent] = useState(false);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -711,7 +715,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {/* Action icons */}
         <div className="flex items-center gap-0.5 sm:gap-1 relative shrink-0">
           {/* 1-on-1 HD Voice & Video Calling Buttons */}
-          {!isGroup && otherUser && !isBlocked && (
+          {!isGroup && otherUser && isAcceptedFriend && !isBlocked && (
             <>
               <button
                 type="button"
@@ -1385,8 +1389,43 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
       )}
 
-      {/* Input Control Bar OR Blocked Warning Bar */}
-      {isBlocked ? (
+      {/* Input Control Bar OR Blocked / Non-Friend Warning Bar */}
+      {!isGroup && !isAcceptedFriend ? (
+        <div className="p-4 bg-amber-50 dark:bg-slate-800/80 border-t border-amber-200 dark:border-slate-700 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-100 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 rounded-xl shrink-0">
+              <ShieldAlert className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-xs font-bold text-slate-900 dark:text-white">
+                You are not currently friends with {otherUser?.displayName || `@${otherUser?.username || 'this user'}`}
+              </p>
+              <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                Direct messaging on Connexa is restricted to accepted friends only.
+              </p>
+            </div>
+          </div>
+
+          {otherUser && userProfile && (
+            <button
+              type="button"
+              disabled={friendRequestSent}
+              onClick={async () => {
+                try {
+                  await sendFriendRequest(userProfile, otherUser);
+                  setFriendRequestSent(true);
+                } catch (err) {
+                  console.error('Error sending friend request:', err);
+                }
+              }}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-emerald-600 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-blue-600/20 transition-all shrink-0 cursor-pointer"
+            >
+              {friendRequestSent ? <Check className="w-3.5 h-3.5" /> : <UserPlus className="w-3.5 h-3.5" />}
+              <span>{friendRequestSent ? 'Friend Request Sent' : 'Add Friend'}</span>
+            </button>
+          )}
+        </div>
+      ) : isBlocked ? (
         <div className="p-4 bg-rose-50 dark:bg-rose-950/40 border-t border-rose-200 dark:border-rose-900/60 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-400 rounded-xl shrink-0">

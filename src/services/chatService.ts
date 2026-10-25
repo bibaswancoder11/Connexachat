@@ -19,11 +19,20 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { ChatRoom, ChatMessage, UserProfile } from '../types';
-import { getFriendshipId } from './friendService';
+import { getFriendshipId, checkIsFriend } from './friendService';
 import { getUserProfile, saveLocalRegisteredAccount } from './userService';
 import { dispatchBackgroundPushNotification } from './notificationService';
 
 export const getOrCreateChat = async (uid1: string, uid2: string): Promise<string> => {
+  if (!uid1 || !uid2 || uid1 === uid2) {
+    throw new Error('Invalid chat participants.');
+  }
+
+  const areFriends = await checkIsFriend(uid1, uid2);
+  if (!areFriends) {
+    throw new Error('You can only message users who are currently in your friends list.');
+  }
+
   const chatId = getFriendshipId(uid1, uid2);
   const chatRef = doc(db, 'chats', chatId);
   const chatSnap = await getDoc(chatRef);

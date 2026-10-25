@@ -11,14 +11,12 @@ import { CreateGroupModal } from './components/CreateGroupModal';
 import { NotificationToast, ToastNotificationData } from './components/NotificationToast';
 import { ChatRoom, FriendRequest, UserProfile } from './types';
 import { subscribeToUserChats, getOrCreateChat } from './services/chatService';
-import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends } from './services/friendService';
+import { subscribeToIncomingRequests, subscribeToOutgoingRequests, subscribeToFriends, checkIsFriend, sendFriendRequest } from './services/friendService';
 import { requestNotificationPermission, sendWebNotification, playNotificationChime, initServiceWorker, initPushNotifications, onNotificationAction } from './services/notificationService';
-import { MessageSquare, Users, UserPlus, PlusCircle } from 'lucide-react';
+import { MessageSquare, UserPlus, PlusCircle } from 'lucide-react';
 import { ConnexaLogo } from './components/ConnexaLogo';
-import { ShareMediaModal, SharedMediaItem } from './components/ShareMediaModal';
-import { ShareLinkModal } from './components/ShareLinkModal';
 import { UniversalShareModal, UniversalSharePayload } from './components/UniversalShareModal';
-import { initShareTargetListener, subscribeToUniversalShareIntents, subscribeToShareIntents, subscribeToLinkShareIntents, SharedLinkPayload } from './utils/apkIntentHandler';
+import { initShareTargetListener, subscribeToUniversalShareIntents } from './utils/apkIntentHandler';
 import { IncomingCallBanner } from './components/IncomingCallBanner';
 import { CallModal } from './components/CallModal';
 import { CallSession, CallType } from './types';
@@ -44,8 +42,6 @@ const ConnexaApp: React.FC = () => {
 
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [universalSharePayload, setUniversalSharePayload] = useState<UniversalSharePayload | null>(null);
-  const [sharedMediaPayload, setSharedMediaPayload] = useState<{ items: SharedMediaItem[]; text?: string } | null>(null);
-  const [sharedLinkPayload, setSharedLinkPayload] = useState<SharedLinkPayload | null>(null);
   const [toastNotification, setToastNotification] = useState<ToastNotificationData | null>(null);
 
   // Calling States (HD Voice & Video Calls)
@@ -66,12 +62,6 @@ const ConnexaApp: React.FC = () => {
   const universalSharePayloadRef = useRef(universalSharePayload);
   universalSharePayloadRef.current = universalSharePayload;
 
-  const sharedMediaPayloadRef = useRef(sharedMediaPayload);
-  sharedMediaPayloadRef.current = sharedMediaPayload;
-
-  const sharedLinkPayloadRef = useRef(sharedLinkPayload);
-  sharedLinkPayloadRef.current = sharedLinkPayload;
-
   const showCreateGroupModalRef = useRef(showCreateGroupModal);
   showCreateGroupModalRef.current = showCreateGroupModal;
 
@@ -88,22 +78,12 @@ const ConnexaApp: React.FC = () => {
           setUniversalSharePayload(null);
           return;
         }
-        // 2. If share link modal is open, cancel it
-        if (sharedLinkPayloadRef.current) {
-          setSharedLinkPayload(null);
-          return;
-        }
-        // 3. If share media modal is open, cancel it
-        if (sharedMediaPayloadRef.current) {
-          setSharedMediaPayload(null);
-          return;
-        }
-        // 4. If create group modal is open, cancel it
+        // 2. If create group modal is open, cancel it
         if (showCreateGroupModalRef.current) {
           setShowCreateGroupModal(false);
           return;
         }
-        // 5. If active chat is open on mobile screen, go back to chats list
+        // 3. If active chat is open on mobile screen, go back to chats list
         if (activeChatIdRef.current) {
           setActiveChatId(null);
           return;
@@ -123,34 +103,20 @@ const ConnexaApp: React.FC = () => {
     }
   }, []);
 
-  // Always initialize Service Worker & Web Share Target listeners unconditionally on mount
+  // Always initialize Service Worker & Universal Share Target listeners unconditionally on mount
   useEffect(() => {
     initServiceWorker();
     initShareTargetListener();
 
-    // Universal WhatsApp-style Share Listener (Links, Documents, Photos, Videos, Text)
+    // Unified WhatsApp-style Share Listener (Links, Documents, Photos, Videos, Audio, Text)
     const unsubUniversal = subscribeToUniversalShareIntents((payload) => {
       if (payload) {
         setUniversalSharePayload(payload);
       }
     });
 
-    const unsubShare = subscribeToShareIntents((payload) => {
-      if (payload && (payload.items.length > 0 || payload.text)) {
-        setSharedMediaPayload(payload);
-      }
-    });
-
-    const unsubLinkShare = subscribeToLinkShareIntents((payload) => {
-      if (payload && (payload.url || payload.text)) {
-        setSharedLinkPayload(payload);
-      }
-    });
-
     return () => {
       unsubUniversal();
-      unsubShare();
-      unsubLinkShare();
     };
   }, []);
 
@@ -473,37 +439,72 @@ const ConnexaApp: React.FC = () => {
   const handleDirectChat = async (targetUid: string) => {
     if (!userProfile) return;
     try {
+      const isAlreadyFriend =
+        friends.some(f => f.uid === targetUid) ||
+        (await checkIsFriend(userProfile.uid, targetUid));
+
+      if (!isAlreadyFriend) {
+        setToastNotification({
+          id: `friends_only_${Date.now()}`,
+          type: 'system',
+          title: 'Friends Only',
+          body: 'Send a friend request first—direct messaging is only available between accepted friends.'
+        });
+        return;
+      }
+
       const chatId = await getOrCreateChat(userProfile.uid, targetUid);
       setActiveChatId(chatId);
       setActiveTab('chats');
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to open chat with user:', err);
+      setToastNotification({
+        id: `chat_err_${Date.now()}`,
+        type: 'system',
+        title: 'Cannot Open Chat',
+        body: err?.message || 'Direct messaging is only available between accepted friends.'
+      });
     }
   };
 
-  // Initiate Free WhatsApp-style Call
+  // Initiate HD Voice or Video Call
   const handleStartCall = async (chat: ChatRoom, type: CallType) => {
     if (!userProfile) return;
     if (chat.isGroup) {
       setToastNotification({
+        id: `call_grp_${Date.now()}`,
         title: 'Group Calling',
-        message: 'Group calling will be available soon! You can call individual friends 1-on-1 for free.',
+        body: 'Group calling will be available soon. You can start HD 1-on-1 voice and video calls with any friend.',
         type: 'system'
       });
       return;
     }
     if (!chat.otherUser) {
       setToastNotification({
+        id: `call_alert_${Date.now()}`,
         title: 'Call Alert',
-        message: 'Recipient user profile is unavailable.',
+        body: 'Recipient user profile is unavailable.',
+        type: 'system'
+      });
+      return;
+    }
+    const isFriendForCall =
+      friends.some(f => f.uid === chat.otherUser?.uid) ||
+      (await checkIsFriend(userProfile.uid, chat.otherUser.uid));
+    if (!isFriendForCall) {
+      setToastNotification({
+        id: `call_friend_${Date.now()}`,
+        title: 'Friends Only',
+        body: 'Voice and video calling is only available between accepted friends.',
         type: 'system'
       });
       return;
     }
     if (activeCallSession) {
       setToastNotification({
+        id: `call_active_${Date.now()}`,
         title: 'Active Call',
-        message: 'You are already on an active call.',
+        body: 'You are already on an active call.',
         type: 'system'
       });
       return;
@@ -534,8 +535,9 @@ const ConnexaApp: React.FC = () => {
     } catch (err: any) {
       console.warn('Call initiation error:', err);
       setToastNotification({
+        id: `call_init_err_${Date.now()}`,
         title: 'Call Initialization',
-        message: err?.message || 'Could not initiate call. Please ensure microphone permissions are allowed.',
+        body: err?.message || 'Could not initiate call. Please ensure microphone permissions are allowed.',
         type: 'system'
       });
     }
@@ -560,7 +562,16 @@ const ConnexaApp: React.FC = () => {
   const activeChat = chats.find(c => c.id === activeChatId);
 
   return (
-    <AvatarPreviewProvider onOpenDirectChat={handleDirectChat}>
+    <AvatarPreviewProvider
+      friends={friends}
+      incomingRequests={incomingRequests}
+      outgoingRequests={outgoingRequests}
+      onOpenDirectChat={handleDirectChat}
+      onSendFriendRequest={async (targetUser) => {
+        await sendFriendRequest(userProfile, targetUser);
+      }}
+      onNavigateToRequests={() => setActiveTab('requests')}
+    >
       <div className="flex flex-col h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 font-sans overflow-hidden">
         
         {/* Top Navigation */}
@@ -701,55 +712,9 @@ const ConnexaApp: React.FC = () => {
               setUniversalSharePayload(null);
               setToastNotification({
                 id: Date.now().toString(),
+                type: 'system',
                 title: 'Sent Successfully',
                 body: `Shared to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
-              });
-              if (chatIds && chatIds.length === 1) {
-                setActiveChatId(chatIds[0]);
-                setActiveTab('chats');
-              }
-            }}
-          />
-        )}
-
-        {/* Multi-Recipient / Native Share Target Media Modal (Legacy fallback) */}
-        {sharedMediaPayload && userProfile && (
-          <ShareMediaModal
-            currentUser={userProfile}
-            friends={friends}
-            chats={chats}
-            initialItems={sharedMediaPayload.items}
-            initialPayload={sharedMediaPayload}
-            onClose={() => setSharedMediaPayload(null)}
-            onSuccess={(chatIds) => {
-              setSharedMediaPayload(null);
-              setToastNotification({
-                id: Date.now().toString(),
-                title: 'Media Shared',
-                body: `Media sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
-              });
-              if (chatIds && chatIds.length === 1) {
-                setActiveChatId(chatIds[0]);
-                setActiveTab('chats');
-              }
-            }}
-          />
-        )}
-
-        {/* Multi-Recipient / Native Share Target Link Modal */}
-        {sharedLinkPayload && userProfile && (
-          <ShareLinkModal
-            currentUser={userProfile}
-            friends={friends}
-            chats={chats}
-            initialPayload={sharedLinkPayload}
-            onClose={() => setSharedLinkPayload(null)}
-            onSuccess={(chatIds) => {
-              setSharedLinkPayload(null);
-              setToastNotification({
-                id: Date.now().toString(),
-                title: 'Link Shared',
-                body: `Link sent to ${chatIds.length} conversation${chatIds.length > 1 ? 's' : ''}`
               });
               if (chatIds && chatIds.length === 1) {
                 setActiveChatId(chatIds[0]);

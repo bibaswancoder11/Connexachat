@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import { Readable } from 'stream';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import webpush from 'web-push';
@@ -16,19 +17,123 @@ app.use(compression());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// Fallback Web Share Target POST handler (in case request reaches Express directly without SW interception)
-app.post(['/', '/share-target', '/index.html'], (req, res) => {
-  const url = (req.body?.url || req.query?.url || '').toString();
-  const text = (req.body?.text || req.query?.text || '').toString();
-  const title = (req.body?.title || req.query?.title || '').toString();
+// Fallback Web Share Target POST handler (in case a cold-launched PWA POST reaches Express before SW intercepts)
+app.post(['/', '/share-target', '/index.html'], async (req, res) => {
+  try {
+    const contentType = (req.headers['content-type'] || '').toLowerCase();
 
-  const sp = new URLSearchParams();
-  if (url) sp.set('shared_url', url);
-  if (text) sp.set('shared_text', text);
-  if (title) sp.set('shared_title', title);
+    if (contentType.includes('multipart/form-data')) {
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+      const host = req.headers.host || `localhost:${PORT}`;
+      const webReq = new Request(`${protocol}://${host}${req.originalUrl}`, {
+        method: 'POST',
+        headers: req.headers as Record<string, string>,
+        body: Readable.toWeb(req) as any,
+        // @ts-ignore - Node fetch duplex stream option
+        duplex: 'half'
+      });
 
-  const queryStr = sp.toString();
-  return res.redirect(303, queryStr ? `/?${queryStr}` : '/');
+      const formData = await webReq.formData();
+      const title = (formData.get('title') || '').toString().trim();
+      const text = (formData.get('text') || '').toString().trim();
+      const url = (formData.get('url') || '').toString().trim();
+
+      const items: Array<{
+        type: 'image' | 'video' | 'file';
+        dataUrl: string;
+        filename: string;
+        size: number;
+        mimeType: string;
+      }> = [];
+
+      for (const [, val] of formData.entries()) {
+        if (val && typeof val === 'object' && 'arrayBuffer' in val && typeof (val as File).size === 'number' && (val as File).size > 0) {
+          const f = val as File;
+          const buf = Buffer.from(await f.arrayBuffer());
+          const mime = f.type || 'application/octet-stream';
+          const lowerName = (f.name || '').toLowerCase();
+          let itemType: 'image' | 'video' | 'file' = 'file';
+          if (mime.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg)$/.test(lowerName)) {
+            itemType = 'image';
+          } else if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi|m4v)$/.test(lowerName)) {
+            itemType = 'video';
+          }
+          items.push({
+            type: itemType,
+            dataUrl: `data:${mime};base64,${buf.toString('base64')}`,
+            filename: f.name || 'shared_file',
+            size: f.size,
+            mimeType: mime
+          });
+        }
+      }
+
+      if (items.length > 0) {
+        const shareId = `share_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        const onlyDocs = items.every(i => i.type === 'file');
+        const recordJson = JSON.stringify({
+          id: shareId,
+          timestamp: Date.now(),
+          type: onlyDocs ? 'file' : 'media',
+          title,
+          text,
+          url,
+          items
+        }).replace(/</g, '\\u003c');
+
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        return res.status(200).send(`<!doctype html><html><head><meta charset="utf-8"><title>Connexa Share</title></head><body style="background:#0f172a;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">Preparing shared content...<script>
+(function(){
+  var record = ${recordJson};
+  function finish(){ window.location.replace('/?share_intent=universal&shared_id=' + encodeURIComponent(record.id)); }
+  try {
+    var req = indexedDB.open('connexa_share_target_db', 1);
+    req.onupgradeneeded = function(e){
+      var db = e.target.result;
+      if (!db.objectStoreNames.contains('shares')) db.createObjectStore('shares', { keyPath: 'id' });
+    };
+    req.onsuccess = function(e){
+      try {
+        var db = e.target.result;
+        var tx = db.transaction('shares', 'readwrite');
+        tx.objectStore('shares').put(record);
+        tx.oncomplete = finish;
+        tx.onerror = finish;
+      } catch (_) { finish(); }
+    };
+    req.onerror = finish;
+  } catch (_) {
+    try { localStorage.setItem('connexa_pending_universal_share', JSON.stringify(record)); } catch (__){}
+    finish();
+  }
+})();
+</script></body></html>`);
+      }
+
+      const sp = new URLSearchParams();
+      sp.set('share_intent', 'universal');
+      if (url) sp.set('shared_url', url);
+      if (text) sp.set('shared_text', text);
+      if (title) sp.set('shared_title', title);
+      return res.redirect(303, `/?${sp.toString()}`);
+    }
+
+    const url = (req.body?.url || req.query?.url || '').toString();
+    const text = (req.body?.text || req.query?.text || '').toString();
+    const title = (req.body?.title || req.query?.title || '').toString();
+
+    const sp = new URLSearchParams();
+    if (url || text || title) sp.set('share_intent', 'universal');
+    if (url) sp.set('shared_url', url);
+    if (text) sp.set('shared_text', text);
+    if (title) sp.set('shared_title', title);
+
+    const queryStr = sp.toString();
+    return res.redirect(303, queryStr ? `/?${queryStr}` : '/');
+  } catch (err) {
+    console.warn('Fallback /share-target POST error:', err);
+    return res.redirect(303, '/');
+  }
 });
 
 // Read Firebase applet configuration

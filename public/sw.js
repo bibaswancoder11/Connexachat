@@ -1,4 +1,4 @@
-// Connexa Messenger Service Worker for Web Push & Background Notifications
+// Connexa Messenger Service Worker v2 — Web Push, Background Notifications & Universal Web Share Target
 
 self.addEventListener('install', (event) => {
   self.skipWaiting();
@@ -14,7 +14,7 @@ self.addEventListener('notificationclick', (event) => {
 
   const clickData = event.notification.data || {};
   const chatId = clickData.chatId;
-  const targetUrl = chatId ? `./?chatId=${encodeURIComponent(chatId)}` : './';
+  const targetUrl = chatId ? `/?chatId=${encodeURIComponent(chatId)}` : '/';
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
@@ -37,8 +37,8 @@ self.addEventListener('push', (event) => {
   let data = {
     title: 'Connexa Messenger',
     body: 'You have a new incoming message!',
-    icon: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
-    badge: 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+    icon: '/logo-192.png',
+    badge: '/logo-192.png',
     data: {}
   };
 
@@ -54,8 +54,8 @@ self.addEventListener('push', (event) => {
 
   const options = {
     body: data.body || 'New message received',
-    icon: data.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
-    badge: data.badge || data.icon || 'https://api.dicebear.com/7.x/bottts/svg?seed=connexa',
+    icon: data.icon || '/logo-192.png',
+    badge: data.badge || data.icon || '/logo-192.png',
     tag: data.tag || (data.data?.chatId ? `connexa-chat-${data.data.chatId}` : 'connexa-msg'),
     data: data.data || {},
     vibrate: [200, 100, 200, 100, 200],
@@ -99,74 +99,96 @@ async function storeShareRecord(record) {
   }
 }
 
-// Intercept Web Share Target POST requests
+function isVisualMediaFile(file) {
+  const mime = (file?.type || '').toLowerCase();
+  if (mime.startsWith('image/') || mime.startsWith('video/')) return true;
+  const name = (file?.name || '').toLowerCase();
+  return /\.(jpg|jpeg|png|gif|webp|bmp|heic|svg|mp4|webm|mov|mkv|avi|m4v)$/.test(name);
+}
+
+// Intercept Web Share Target POST requests (Images, Videos, Documents, Links, Text)
 self.addEventListener('fetch', (event) => {
-  if (event.request.method === 'POST') {
-    const url = new URL(event.request.url);
-    if (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html') || url.pathname.includes('/share')) {
-      event.respondWith(
-        (async () => {
-          let redirectUrl = './';
-          try {
-            const formData = await event.request.formData();
-            const mediaFiles = formData.getAll('media');
-            const title = (formData.get('title') || '').toString().trim();
-            const text = (formData.get('text') || '').toString().trim();
-            const sharedUrl = (formData.get('url') || '').toString().trim();
+  if (event.request.method !== 'POST') return;
 
-            const shareId = 'share_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
-            const hasMedia = mediaFiles && mediaFiles.length > 0 && mediaFiles.some(f => f && f.size > 0);
+  const url = new URL(event.request.url);
+  const isShareRoute =
+    url.pathname === '/share-target' ||
+    url.pathname.endsWith('/share-target') ||
+    url.pathname === '/' ||
+    url.pathname.endsWith('/index.html');
 
-            // Store in IndexedDB so the client can retrieve files and data even when launched from closed state
-            const shareRecord = {
-              id: shareId,
-              timestamp: Date.now(),
-              type: hasMedia ? 'media' : 'link',
-              title,
-              text,
-              url: sharedUrl,
-              files: hasMedia ? mediaFiles : []
-            };
+  if (!isShareRoute) return;
 
-            await storeShareRecord(shareRecord);
+  event.respondWith(
+    (async () => {
+      let redirectUrl = '/';
+      try {
+        const formData = await event.request.formData();
 
-            // Broadcast to any open windows if available
-            const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-            for (const client of clientList) {
-              if (hasMedia) {
-                client.postMessage({
-                  type: 'WEB_SHARE_TARGET_MEDIA',
-                  shareId,
-                  files: mediaFiles,
-                  text: `${title} ${text}`.trim()
-                });
-              } else {
-                client.postMessage({
-                  type: 'WEB_SHARE_TARGET_LINK',
-                  shareId,
-                  url: sharedUrl,
-                  title,
-                  text
-                });
-              }
-            }
-
-            if (hasMedia) {
-              redirectUrl = `./?share_intent=universal&shared_id=${encodeURIComponent(shareId)}`;
-            } else {
-              const searchParams = new URLSearchParams();
-              searchParams.set('shared_id', shareId);
-              if (sharedUrl) searchParams.set('shared_url', sharedUrl);
-              if (text) searchParams.set('shared_text', text);
-              if (title) searchParams.set('shared_title', title);
-              redirectUrl = `./?${searchParams.toString()}`;
-            }
-          } catch (e) {
-            console.warn('Share target processing error in SW:', e);
+        // Collect all shared File objects from 'media' or any file field
+        const collectedFiles = [];
+        for (const [, value] of formData.entries()) {
+          if (value && typeof value === 'object' && typeof value.size === 'number' && value.size > 0) {
+            collectedFiles.push(value);
           }
-          return Response.redirect(redirectUrl, 303);
-        })()
-      );
-    }
-  }
+        }
+
+        const title = (formData.get('title') || '').toString().trim();
+        const text = (formData.get('text') || '').toString().trim();
+        const sharedUrl = (formData.get('url') || '').toString().trim();
+
+        const shareId = 'share_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+        const hasFiles = collectedFiles.length > 0;
+        const allDocs = hasFiles && collectedFiles.every((f) => !isVisualMediaFile(f));
+
+        // Store in IndexedDB so the client retrieves files/links reliably even when launched cold
+        const shareRecord = {
+          id: shareId,
+          timestamp: Date.now(),
+          type: hasFiles ? (allDocs ? 'file' : 'media') : (sharedUrl ? 'link' : 'text'),
+          title,
+          text,
+          url: sharedUrl,
+          files: collectedFiles
+        };
+
+        await storeShareRecord(shareRecord);
+
+        // Broadcast immediately if Connexa already has an open client window
+        const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of clientList) {
+          if (hasFiles) {
+            client.postMessage({
+              type: allDocs ? 'WEB_SHARE_TARGET_FILE' : 'WEB_SHARE_TARGET_MEDIA',
+              shareId,
+              files: collectedFiles,
+              title,
+              text
+            });
+          } else {
+            client.postMessage({
+              type: 'WEB_SHARE_TARGET_LINK',
+              shareId,
+              url: sharedUrl,
+              title,
+              text
+            });
+          }
+        }
+
+        const searchParams = new URLSearchParams();
+        searchParams.set('share_intent', 'universal');
+        searchParams.set('shared_id', shareId);
+        if (!hasFiles) {
+          if (sharedUrl) searchParams.set('shared_url', sharedUrl);
+          if (text) searchParams.set('shared_text', text);
+          if (title) searchParams.set('shared_title', title);
+        }
+        redirectUrl = `/?${searchParams.toString()}`;
+      } catch (e) {
+        console.warn('Share target processing error in SW:', e);
+      }
+      return Response.redirect(redirectUrl, 303);
+    })()
+  );
 });

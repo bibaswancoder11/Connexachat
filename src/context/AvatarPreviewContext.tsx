@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState } from 'react';
 import { AvatarPreviewData, AvatarPreviewModal } from '../components/AvatarPreviewModal';
+import { FriendRequest, UserProfile } from '../types';
 
 interface AvatarPreviewContextType {
   openAvatarPreview: (data: AvatarPreviewData) => void;
@@ -11,8 +12,21 @@ const AvatarPreviewContext = createContext<AvatarPreviewContextType | undefined>
 
 export const AvatarPreviewProvider: React.FC<{
   children: React.ReactNode;
+  friends?: UserProfile[];
+  incomingRequests?: FriendRequest[];
+  outgoingRequests?: FriendRequest[];
   onOpenDirectChat?: (uid: string) => void;
-}> = ({ children, onOpenDirectChat }) => {
+  onSendFriendRequest?: (targetUser: UserProfile) => Promise<void>;
+  onNavigateToRequests?: () => void;
+}> = ({
+  children,
+  friends = [],
+  incomingRequests = [],
+  outgoingRequests = [],
+  onOpenDirectChat,
+  onSendFriendRequest,
+  onNavigateToRequests
+}) => {
   const [previewData, setPreviewData] = useState<AvatarPreviewData | null>(null);
 
   const openAvatarPreview = (data: AvatarPreviewData) => {
@@ -28,8 +42,13 @@ export const AvatarPreviewProvider: React.FC<{
       {children}
       <AvatarPreviewModal
         data={previewData}
+        friends={friends}
+        incomingRequests={incomingRequests}
+        outgoingRequests={outgoingRequests}
         onClose={closeAvatarPreview}
         onOpenDirectChat={onOpenDirectChat}
+        onSendFriendRequest={onSendFriendRequest}
+        onNavigateToRequests={onNavigateToRequests}
       />
     </AvatarPreviewContext.Provider>
   );

@@ -1,39 +1,48 @@
 {
+  "id": "/",
   "name": "Connexa Messenger",
   "short_name": "Connexa",
-  "description": "Real-time chat application with high-resolution avatars, unique user handles, instant push & sound alerts, and direct messaging.",
-  "start_url": "./",
+  "description": "Real-time messenger featuring HD audio and video calling, background push notifications, universal media and document sharing, and group chats.",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0F172A",
   "theme_color": "#2563EB",
   "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "logo-192.png",
+      "src": "/logo-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "logo-512.png",
+      "src": "/logo-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "logo.svg",
-      "sizes": "192x192 512x512",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
+      "src": "/logo-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
-      "src": "favicon.svg",
+      "src": "/logo.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.svg",
       "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/svg+xml"
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ],
   "share_target": {
-    "action": "./",
+    "action": "/share-target",
     "method": "POST",
     "enctype": "multipart/form-data",
     "params": {
@@ -43,7 +52,52 @@
       "files": [
         {
           "name": "media",
-          "accept": ["image/*", "video/*", "audio/*", "application/*", "text/*", "*/*"]
+          "accept": [
+            "image/*",
+            "video/*",
+            "audio/*",
+            "text/*",
+            "application/pdf",
+            "application/msword",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.ms-excel",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/rtf",
+            "application/json",
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/x-rar-compressed",
+            "application/x-7z-compressed",
+            "application/gzip",
+            "application/epub+zip",
+            "application/vnd.android.package-archive",
+            "application/octet-stream",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            ".txt",
+            ".csv",
+            ".md",
+            ".json",
+            ".xml",
+            ".rtf",
+            ".odt",
+            ".ods",
+            ".odp",
+            ".epub",
+            ".zip",
+            ".rar",
+            ".7z",
+            ".tar",
+            ".gz",
+            ".apk"
+          ]
         }
       ]
     }
